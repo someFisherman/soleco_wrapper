@@ -1,0 +1,16 @@
+workflows:
+  ios_unsigned:
+    name: iOS unsigned IPA
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+    cache:
+      cache_default_paths: true
+    scripts:
+      - name: Flutter packages
+        script: flutter pub get
+      - name: Build iOS (no codesign)
+        script: flutter build ipa --release --no-codesign
+    artifacts:
+      - build/ios/ipa/*.ipa

@@ -114,7 +114,7 @@ class _CredsScreenState extends State<CredsScreen> {
   }
 }
 
-/// ---------------- WebShell (WebView + Overlays: Hub → Picker → Laden) ----------------
+/// ---------------- WebShell (WebView + Overlays) ----------------
 class WebShell extends StatefulWidget {
   const WebShell({super.key});
   @override
@@ -131,9 +131,9 @@ class _WebShellState extends State<WebShell> {
   bool _loading = true;
 
   // Overlays
-  bool _showHub = false;            // „Webseite“ oder „Auto“
-  bool _showVehiclePicker = false;  // Fahrzeugliste
-  bool _showCharging = false;       // Sofortladen-Screen
+  bool _showHub = false;            // Auswahl: Webseite / Auto
+  bool _showVehiclePicker = false;  // Liste aus #vehicleSelection
+  bool _showCharging = false;       // Sofortladen-Panel
 
   bool _didAutoLogin = false;
   static const _cookieStoreKey = 'cookie_store_v1';
@@ -153,7 +153,7 @@ class _WebShellState extends State<WebShell> {
           onPageFinished: (url) async {
             setState(() => _loading = false);
 
-            // B2C Login? -> auto login (einmalig)
+            // B2C Login erkannt? -> Auto-Login (einmalig)
             if (await _isB2CLoginDom()) {
               if (!_didAutoLogin) {
                 _didAutoLogin = true;
@@ -161,11 +161,10 @@ class _WebShellState extends State<WebShell> {
               }
             }
 
-            // Eingeloggt (VehicleAppointments) -> Cookies sichern + Hub einblenden
+            // Eingeloggt -> Cookies sichern + Hub anzeigen
             if (url.contains('VehicleAppointments')) {
               await _persistCookies(url);
               if (mounted) {
-                // Hub statt sofort Laden, damit du zuerst „Webseite/Auto“ siehst
                 setState(() {
                   _showHub = true;
                   _showVehiclePicker = false;
@@ -175,7 +174,6 @@ class _WebShellState extends State<WebShell> {
               return;
             }
 
-            // sonst Cookies einsammeln
             await _persistCookies(url);
           },
           onNavigationRequest: (req) {
@@ -189,7 +187,7 @@ class _WebShellState extends State<WebShell> {
         ),
       );
 
-    // Cookies wiederherstellen und dann Seite laden
+    // Cookies wiederherstellen und Seite laden
     Future.microtask(() async {
       await _restoreCookies();
       await _c.loadRequest(Uri.parse(startUrl));
@@ -254,10 +252,8 @@ class _WebShellState extends State<WebShell> {
           return !!(f&&u&&p&&n);
         })();
       ''');
-      return res.toString() == 'true' || res.toString() == '1';
-    } catch (_) {
-      return false;
-    }
+    return res.toString() == 'true' || res.toString() == '1';
+    } catch (_) { return false; }
   }
 
   Future<void> _autoLoginB2C() async {
@@ -316,9 +312,7 @@ class _WebShellState extends State<WebShell> {
       }
       setState(() {
         _didAutoLogin = false;
-        _showHub = false;
-        _showVehiclePicker = false;
-        _showCharging = false;
+        _showHub = false; _showVehiclePicker = false; _showCharging = false;
       });
       await _c.loadRequest(Uri.parse(startUrl));
       if (switchAccount && mounted) {
@@ -327,82 +321,131 @@ class _WebShellState extends State<WebShell> {
     } catch (_) {}
   }
 
-  /// ---------- Fahrzeuge scannen & auswählen ----------
+  /// ---------- Fahrzeuge aus #vehicleSelection holen ----------
   Future<List<VehicleItem>> _scanVehicles() async {
-    final js = '''
+    final js = r'''
       (function(){
-        function clean(t){return (t||'').replace(/\\s+/g,' ').trim();}
-        var items=[], seen={};
+        function clean(t){return (t||'').replace(/\s+/g,' ').trim();}
+        var root = document.getElementById('vehicleSelection');
+        if(!root){ return JSON.stringify({ok:false, reason:'no_element', list:[]}); }
 
-        // 1) Links, die wie Fahrzeug-Navigation aussehen
-        var as = Array.from(document.querySelectorAll('a[href]'));
-        as.forEach(function(a){
-          var href = a.href||'';
-          if(/Vehicle/i.test(href) && /Appointment|Vehicle/i.test(href)){
-            if(!seen[href]){
-              seen[href]=true;
-              var label = clean(a.textContent)||clean(a.getAttribute('aria-label'));
-              if(!label){
-                var card = a.closest('.card, .dx-card, .dx-list-item, li, tr');
-                if(card) label = clean(card.textContent);
+        var items = [];
+
+        // 1) Versuch über DevExtreme-API
+        try{
+          if(window.jQuery && jQuery.fn.dxSelectBox){
+            var inst = jQuery(root).dxSelectBox('instance');
+            if(inst){
+              var arr = inst.option('items') || inst.option('dataSource') || [];
+              if(Array.isArray(arr) && arr.length){
+                arr.forEach(function(it, idx){
+                  if(typeof it === 'object'){
+                    var label = clean(it.text || it.name || it.label || it.title || (''+it.value) || (''+it.id) || ('Item '+(idx+1)));
+                    var value = (it.value!=null)? it.value : (it.id!=null? it.id : label);
+                    items.push({label:label, value:''+value});
+                  } else {
+                    items.push({label:clean(''+it), value:''+it});
+                  }
+                });
+                return JSON.stringify({ok:true, from:'items', list:items});
               }
-              items.push({type:'link', href:href, label: label||'Fahrzeug'});
             }
           }
-        });
+        }catch(e){}
 
-        // 2) Dropdown <select> mit vehicle/fahrzeug im Namen
-        var sels = Array.from(document.querySelectorAll('select'));
-        sels.forEach(function(s){
-          var idn = (s.id||'') + ' ' + (s.name||'');
-          if(/vehicle|fahrzeug/i.test(idn)){
-            Array.from(s.options||[]).forEach(function(o,idx){
-              items.push({type:'select', selectId:(s.id||s.name||'vehicle'), value:o.value, label:clean(o.text), index:idx});
-            });
+        // 2) Fallback: DOM aus dem Popup lesen
+        try{
+          if(window.jQuery && jQuery.fn.dxSelectBox){
+            var inst = jQuery(root).dxSelectBox('instance');
+            try{ inst.option('opened', true); }catch(e){}
           }
+        }catch(e){}
+        var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item .dx-item-content');
+        if(nodes.length===0){
+          nodes = document.querySelectorAll('#vehicleSelection .dx-selectbox-popup .dx-item .dx-item-content, .dx-selectbox-popup .dx-item .dx-item-content');
+        }
+        nodes.forEach(function(n,i){
+          var t = clean(n.textContent);
+          if(t){ items.push({label:t, value:t}); }
         });
-
-        return JSON.stringify(items.slice(0,40));
+        return JSON.stringify({ok:true, from:'dom', list:items});
       })();
     ''';
 
     try {
       final res = await _c.runJavaScriptReturningResult(js);
       final jsonStr = res is String ? res : res.toString();
-      final data = jsonDecode(jsonStr) as List<dynamic>;
-      return data.map((e) => VehicleItem.fromJson(e as Map<String, dynamic>)).toList();
+      final obj = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final list = (obj['list'] as List).cast<Map<String, dynamic>>();
+      return list.map((m) => VehicleItem(label: m['label'] as String, value: m['value'] as String)).toList();
     } catch (_) {
       return [];
     }
   }
 
+  /// Auswahl in #vehicleSelection setzen (per Value/Text)
   Future<String> _selectVehicle(VehicleItem v) async {
-    final js = (v.type == 'link')
-        ? '''
-          (function(){
-            var href = '${_js(v.href ?? '')}';
-            var a = Array.from(document.querySelectorAll('a[href]')).find(x => x.href===href);
-            if(a){ a.click(); return 'clicked'; }
-            location.href = href; return 'navigated';
-          })();
-        '''
-        : '''
-          (function(){
-            function sel(q){ try{return document.querySelector(q);}catch(e){return null;} }
-            var id = '${_js(v.selectId ?? '')}';
-            var s = sel('select#'+id) || sel('select[name="'+id+'"]') || document.querySelector('select');
-            if(!s) return 'no_select';
-            s.value = '${_js(v.value ?? '')}';
-            try{ s.dispatchEvent(new Event('input',{bubbles:true})); }catch(e){}
-            try{ s.dispatchEvent(new Event('change',{bubbles:true})); }catch(e){}
-            return 'selected';
-          })();
-        ''';
+    final js = '''
+      (function(){
+        function clean(t){return (t||'').replace(/\\s+/g,' ').trim();}
+        var root = document.getElementById('vehicleSelection');
+        if(!root) return 'no_element';
+
+        function setViaItems(){
+          try{
+            if(window.jQuery && jQuery.fn.dxSelectBox){
+              var inst = jQuery(root).dxSelectBox('instance');
+              if(!inst) return 'no_instance';
+              var arr = inst.option('items') || inst.option('dataSource') || [];
+              for(var i=0;i<arr.length;i++){
+                var it = arr[i], label='', val=null;
+                if(typeof it==='object'){
+                  label = clean(it.text || it.name || it.label || it.title || (''+it.value) || (''+it.id));
+                  val   = (it.value!=null)? it.value : (it.id!=null? it.id : label);
+                }else{
+                  label = clean(''+it); val = it;
+                }
+                if(label===clean('${_js(v.label)}') || (''+val)===('${_js(v.value)}')){
+                  inst.option('value', val);
+                  try{ inst.option('opened', false); }catch(e){}
+                  try{ jQuery(root).trigger('change'); }catch(e){}
+                  return 'set_by_items';
+                }
+              }
+              return 'not_in_items';
+            }
+          }catch(e){}
+          return 'no_items_api';
+        }
+
+        var r = setViaItems();
+        if(r==='set_by_items') return r;
+
+        // Fallback: DOM klicken
+        try{
+          var inst = (window.jQuery && jQuery.fn.dxSelectBox) ? jQuery(root).dxSelectBox('instance') : null;
+          try{ inst && inst.option('opened', true); }catch(e){}
+          var target = '${_js(v.label)}';
+          var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item .dx-item-content');
+          if(nodes.length===0){
+            nodes = document.querySelectorAll('#vehicleSelection .dx-selectbox-popup .dx-item .dx-item-content, .dx-selectbox-popup .dx-item .dx-item-content');
+          }
+          for(var j=0;j<nodes.length;j++){
+            var t = clean(nodes[j].textContent);
+            if(t===clean(target)){
+              nodes[j].click();
+              return 'clicked_dom';
+            }
+          }
+        }catch(e){}
+        return r;
+      })();
+    ''';
 
     try {
       final res = await _c.runJavaScriptReturningResult(js);
       return res.toString();
-    } catch (e) {
+    } catch (_) {
       return 'error';
     }
   }
@@ -470,50 +513,43 @@ class _WebShellState extends State<WebShell> {
               },
               onAuto: () async {
                 final list = await _scanVehicles();
-                setState(() {
-                  _vehicles = list;
-                  _showHub = false;
-                  _showVehiclePicker = true;
-                });
+                if (list.length == 1) {
+                  // auto-select und direkt zum Laden
+                  await _selectVehicle(list.first);
+                  await Future.delayed(const Duration(milliseconds: 250));
+                  setState(() { _showHub = false; _showCharging = true; });
+                } else {
+                  setState(() {
+                    _vehicles = list;
+                    _showHub = false;
+                    _showVehiclePicker = true;
+                  });
+                }
               },
             ),
 
-          // Fahrzeug-Picker
+          // Fahrzeug-Picker (nur #vehicleSelection)
           if (_showVehiclePicker)
             VehiclePickerOverlay(
               vehicles: _vehicles,
-              onCancel: () => setState(() {
-                _showVehiclePicker = false;
-                _showHub = true;
-              }),
+              onCancel: () => setState(() { _showVehiclePicker = false; _showHub = true; }),
+              onRescan: () async {
+                final list = await _scanVehicles();
+                setState(() => _vehicles = list);
+              },
               onSelect: (v) async {
                 final res = await _selectVehicle(v);
-                // kleine Wartezeit, damit die Seite wechseln kann
-                await Future.delayed(const Duration(milliseconds: 300));
-                setState(() {
-                  _showVehiclePicker = false;
-                  _showCharging = true;
-                });
+                await Future.delayed(const Duration(milliseconds: 250));
+                setState(() { _showVehiclePicker = false; _showCharging = true; });
                 if (mounted && res.startsWith('no_')) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(content: Text('Konnte Fahrzeug nicht wählen: $res')),
                   );
                 }
               },
-              onSkip: () {
-                // direkt zur Lade-UI
-                setState(() {
-                  _showVehiclePicker = false;
-                  _showCharging = true;
-                });
-              },
-              onRescan: () async {
-                final list = await _scanVehicles();
-                setState(() => _vehicles = list);
-              },
             ),
 
-          // Laden
+          // Sofortladen
           if (_showCharging)
             CustomChargingPanel(
               runJS: (code) => _c.runJavaScript(code),
@@ -531,7 +567,7 @@ class _WebShellState extends State<WebShell> {
   }
 }
 
-/// ---------------- HUB Overlay ----------------
+/// ---------------- HUB Overlay (schön & simpel) ----------------
 class HubOverlay extends StatelessWidget {
   final VoidCallback onWebsite;
   final VoidCallback onAuto;
@@ -548,19 +584,9 @@ class HubOverlay extends StatelessWidget {
             return Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _RoundAction(
-                  size: size,
-                  icon: Icons.public,
-                  label: 'Webseite',
-                  onTap: onWebsite,
-                ),
+                _RoundAction(size: size, icon: Icons.public, label: 'Webseite', onTap: onWebsite),
                 const SizedBox(height: 32),
-                _RoundAction(
-                  size: size,
-                  icon: Icons.electric_bolt,
-                  label: 'Auto',
-                  onTap: onAuto,
-                ),
+                _RoundAction(size: size, icon: Icons.ev_station, label: 'Auto', onTap: onAuto),
               ],
             );
           },
@@ -602,11 +628,10 @@ class _RoundAction extends StatelessWidget {
   }
 }
 
-/// ---------------- Fahrzeug-Picker Overlay ----------------
+/// ---------------- Fahrzeug-Picker ----------------
 class VehiclePickerOverlay extends StatelessWidget {
   final List<VehicleItem> vehicles;
   final VoidCallback onCancel;
-  final VoidCallback onSkip;
   final Future<void> Function() onRescan;
   final Future<void> Function(VehicleItem v) onSelect;
 
@@ -614,7 +639,6 @@ class VehiclePickerOverlay extends StatelessWidget {
     super.key,
     required this.vehicles,
     required this.onCancel,
-    required this.onSkip,
     required this.onRescan,
     required this.onSelect,
   });
@@ -640,27 +664,8 @@ class VehiclePickerOverlay extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               if (vehicles.isEmpty)
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const Text('Keine Liste gefunden.',
-                            style: TextStyle(fontWeight: FontWeight.w600)),
-                        const SizedBox(height: 8),
-                        const Text('Du kannst direkt zum Laden gehen oder neu scannen.'),
-                        const SizedBox(height: 12),
-                        FilledButton.icon(
-                          onPressed: onSkip,
-                          icon: const Icon(Icons.flash_on),
-                          label: const Text('Direkt zum Laden'),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else
+                const Text('Keine Fahrzeuge gefunden. Bitte neu scannen oder zur Webseite.'),
+              if (vehicles.isNotEmpty)
                 Expanded(
                   child: ListView.separated(
                     itemCount: vehicles.length,
@@ -674,12 +679,9 @@ class VehiclePickerOverlay extends StatelessWidget {
                           backgroundColor: Colors.teal.shade700,
                           child: const Icon(Icons.directions_car, color: Colors.white),
                         ),
-                        title: Text(v.label ?? 'Fahrzeug ${i+1}', maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Text(v.type == 'link'
-                            ? 'Link'
-                            : 'Auswahl: ${v.selectId ?? 'select'}'),
+                        title: Text(v.label, maxLines: 1, overflow: TextOverflow.ellipsis),
                         trailing: const Icon(Icons.chevron_right),
-                        onTap: () async => onSelect(v),
+                        onTap: () => onSelect(v),
                       );
                     },
                   ),
@@ -693,24 +695,12 @@ class VehiclePickerOverlay extends StatelessWidget {
 }
 
 class VehicleItem {
-  final String type;        // 'link' | 'select'
-  final String? href;       // bei link
-  final String? label;      // Anzeige
-  final String? selectId;   // bei select
-  final String? value;      // bei select
-
-  VehicleItem({required this.type, this.href, this.label, this.selectId, this.value});
-
-  factory VehicleItem.fromJson(Map<String, dynamic> j) => VehicleItem(
-    type: j['type'] as String,
-    href: j['href'] as String?,
-    label: j['label'] as String?,
-    selectId: j['selectId'] as String?,
-    value: j['value'] as String?,
-  );
+  final String label; // z. B. "Tesla", "My Benz"
+  final String value; // dxSelectBox value (oder fallback = label)
+  VehicleItem({required this.label, required this.value});
 }
 
-/// ---------------- Dein Schnellstart-Panel (unverändert zuverlässig) ----------------
+/// ---------------- Sofortladen-Panel ----------------
 class CustomChargingPanel extends StatefulWidget {
   final Future<void> Function(String js) runJS;
   final VoidCallback onBackToWeb;
@@ -743,34 +733,28 @@ class _CustomChargingPanelState extends State<CustomChargingPanel> {
         function toNum(x){var n=parseFloat(x); return isNaN(n)?0:n;}
         var m = toNum("$minutes");
 
-        // A) Zuerst DevExtreme-Button-Handler direkt (nimmt aktuellen Fahrzeug-Kontext)
+        // DevExtreme-Button-Handler direkt
         try {
           if (window.jQuery) {
             var inst = jQuery("#PostParametersButton").dxButton("instance");
             if (inst) {
-              // Minuten in der Form setzen
               try {
                 var form = jQuery("#parameterform").dxForm("instance");
                 if (form) { try { form.updateData("Minutes", m); } catch(e){} }
               } catch(e){}
-
               var handler = inst.option("onClick");
-              if (typeof handler === "function") {
-                handler({});
-                return "handler_called";
-              }
+              if (typeof handler === "function") { handler({}); return "handler_called"; }
             }
           }
         } catch(e){}
 
-        // B) Fallback: direkte PostParameters(...) – mit Werten aus der Form
+        // Fallback: direkte PostParameters(...)
         try {
           if (window.DevExpress && window.jQuery) {
             var form = jQuery("#parameterform").dxForm("instance");
             if (form) {
               var eMin = form.getEditor("Minutes");
               var eCR  = form.getEditor("CurrentRange");
-
               if (eMin) { try { eMin.option("value", m); } catch(e){} }
               try { form.updateData("Minutes", m); } catch(e){}
 
@@ -796,7 +780,7 @@ class _CustomChargingPanelState extends State<CustomChargingPanel> {
           }
         } catch(e){}
 
-        // C) Letzter Fallback: dxclick + Pointer-Events + click()
+        // Letzter Fallback: Klick-Sequenz
         var btn = document.querySelector("#PostParametersButton");
         if (btn) {
           try { if (window.jQuery) jQuery(btn).trigger('dxclick'); } catch(e){}

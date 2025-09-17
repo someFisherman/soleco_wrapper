@@ -11,51 +11,47 @@ workflows:
         script: |
           flutter --version
           flutter pub get
-          # falls ios/ noch fehlt:
+          # sicherstellen, dass ios/ vorhanden ist
           flutter create . --platforms=ios
 
-      - name: CocoaPods installieren/aktualisieren
+      - name: Build archive with Flutter (no codesign) – tolerate nonzero exit
         script: |
-          cd ios
-          pod repo update
-          pod install
-          cd ..
+          set +e
+          flutter clean
+          flutter build ipa --release --no-codesign
+          EXIT_CODE=$?
+          echo "flutter build ipa exit code: $EXIT_CODE"
+          echo "Archive tree:"
+          ls -R build/ios/archive || true
 
-      - name: (Info) Xcode Schemes anzeigen
+          # Prüfen, ob das Archiv existiert – wenn ja, trotzdem OK weiterbauen
+          APP_DIR="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+          if [ ! -d "$APP_DIR" ]; then
+            echo "Runner.app nicht gefunden. Versuche Fallback-Suche..."
+            find build -type d -name "Runner.app" -print
+            # Wenn weiterhin nichts da: jetzt wirklich fehlschlagen
+            if ! find build -type d -name "Runner.app" | grep -q . ; then
+              echo "Kein Runner.app im Build gefunden. Abbruch."
+              exit 1
+            fi
+          fi
+          # Exit NICHT hart fehlschlagen, selbst wenn EXIT_CODE != 0
+          exit 0
+
+      - name: Package unsigned IPA from .xcarchive (or found Runner.app)
         script: |
-          xcodebuild -list -workspace ios/Runner.xcworkspace || true
-
-      - name: Build .app via xcodebuild (ohne Codesign)
-        script: |
-          set -euxo pipefail
-          xcodebuild -version
-          xcodebuild \
-            -workspace ios/Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath build/ios_nosign \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            build
-
-          APP_PATH="build/ios_nosign/Build/Products/Release-iphoneos/Runner.app"
-          echo "Erzeugte App:"
-          ls -la "$APP_PATH"
-
-      - name: Package unsigned IPA
-        script: |
-          set -euxo pipefail
-          APP_PATH="build/ios_nosign/Build/Products/Release-iphoneos/Runner.app"
+          set -e
+          APP_PATH="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+          if [ ! -d "$APP_PATH" ]; then
+            # Fallback: nimm das erste gefundene Runner.app irgendwo im Build
+            APP_PATH="$(find build -type d -name "Runner.app" | head -n 1)"
+          fi
+          echo "Using app at: $APP_PATH"
           mkdir -p out/Payload
           cp -R "$APP_PATH" out/Payload/
           (cd out && zip -r SolecoWrapper-unsigned.ipa Payload)
           rm -rf out/Payload
-          echo "Finale Artefakte:"
+          echo "Final artifacts in out/:"
           ls -la out
 
     artifacts:

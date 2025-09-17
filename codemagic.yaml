@@ -8,7 +8,18 @@ workflows:
     scripts:
       - name: Flutter packages
         script: flutter pub get
+
       - name: Build iOS (no codesign)
-        script: flutter build ipa --release --no-codesign
+        script: |
+          flutter create . --platforms=ios
+          flutter build ipa --release --no-codesign
+          echo "Listing build/ios:"
+          ls -R build/ios || true
+          echo "Listing build/ios/ipa:"
+          ls -l build/ios/ipa || true
+          mkdir -p out
+          cp build/ios/ipa/*.ipa out/ || echo "No IPA found to copy"
+
     artifacts:
+      - out/*.ipa
       - build/ios/ipa/*.ipa

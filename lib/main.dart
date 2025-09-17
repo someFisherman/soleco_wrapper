@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io'; // <- wichtig für Cookie
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -14,7 +15,7 @@ class App extends StatelessWidget {
     return MaterialApp(
       title: 'Soleco',
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
-      home: const Gate(),
+      home: const WebShell(), // Gate weglassen? Nein – wir behalten Gate in der AppBar-Aktion
     );
   }
 }
@@ -113,7 +114,7 @@ class _CredsScreenState extends State<CredsScreen> {
   }
 }
 
-/// ---------------- WebShell (WebView + Auto-Login + Cookie-Persistenz) ----------------
+/// ---------------- WebShell (WebView immer gemountet + Overlay UI) ----------------
 class WebShell extends StatefulWidget {
   const WebShell({super.key});
   @override
@@ -121,7 +122,6 @@ class WebShell extends StatefulWidget {
 }
 
 class _WebShellState extends State<WebShell> {
-  // Zielseite – wenn nicht eingeloggt, leitet Soleco auf B2C um.
   static const String startUrl = 'https://soleco-optimizer.ch/VehicleAppointments';
 
   final storage = const FlutterSecureStorage();
@@ -147,7 +147,7 @@ class _WebShellState extends State<WebShell> {
           onPageFinished: (url) async {
             setState(() => _loading = false);
 
-            // 1) B2C-Loginseite? -> Auto-Login (einmalig)
+            // B2C-Login erkannt? -> einmal Auto-Login
             if (await _isB2CLoginDom()) {
               if (!_didAutoLogin) {
                 _didAutoLogin = true;
@@ -155,14 +155,14 @@ class _WebShellState extends State<WebShell> {
               }
             }
 
-            // 2) Eingeloggt? -> Cookies sichern + Custom UI
+            // Eingeloggt -> Cookies sichern + Overlay zeigen
             if (url.contains('VehicleAppointments')) {
-              await _persistCookies(url); // Cookies sichern (soleco-Domain)
+              await _persistCookies(url);
               if (mounted) setState(() => _showCustomUI = true);
               return;
             }
 
-            // 3) Generell Cookies einsammeln (auch B2C-Domain)
+            // sonst Cookies einsammeln (auch B2C-Domain)
             await _persistCookies(url);
           },
           onNavigationRequest: (req) {
@@ -176,15 +176,14 @@ class _WebShellState extends State<WebShell> {
         ),
       );
 
-    // Cookies vor dem ersten Laden wiederherstellen, dann URL laden
+    // Cookies wiederherstellen und dann Seite laden
     Future.microtask(() async {
       await _restoreCookies();
       await _c.loadRequest(Uri.parse(startUrl));
     });
   }
 
-  /// ---- Cookie-Persistenz ----
-
+  // ---------- Cookie-Persistenz ----------
   Future<void> _restoreCookies() async {
     final raw = await storage.read(key: _cookieStoreKey);
     if (raw == null) return;
@@ -230,8 +229,7 @@ class _WebShellState extends State<WebShell> {
     } catch (_) {}
   }
 
-  /// ---- B2C-Login-Erkennung & Auto-Login ----
-
+  // ---------- B2C Auto-Login ----------
   Future<bool> _isB2CLoginDom() async {
     try {
       final res = await _c.runJavaScriptReturningResult('''
@@ -294,12 +292,6 @@ class _WebShellState extends State<WebShell> {
 
   @override
   Widget build(BuildContext context) {
-    if (_showCustomUI) {
-      return CustomChargingScreen(
-        controller: _c,
-        onBackToWeb: () => setState(() => _showCustomUI = false),
-      );
-    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('Soleco'),
@@ -308,44 +300,49 @@ class _WebShellState extends State<WebShell> {
           IconButton(
             tooltip: 'Login ändern',
             icon: const Icon(Icons.manage_accounts),
-            onPressed: () async {
-              await storage.delete(key: 'soleco_user');
-              await storage.delete(key: 'soleco_pass');
-              await storage.delete(key: _cookieStoreKey);
-              if (!mounted) return;
-              Navigator.of(context).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (_) => const Gate()),
-                (_) => false,
-              );
+            onPressed: () {
+              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const Gate()));
             },
           )
         ],
       ),
       body: Stack(
         children: [
-          WebViewWidget(controller: _c),
+          // WebView bleibt IMMER gemountet, wird nur unsichtbar geschaltet
+          Offstage(
+            offstage: _showCustomUI, // verstecken, aber nicht entsorgen
+            child: WebViewWidget(controller: _c),
+          ),
           if (_loading) const LinearProgressIndicator(minHeight: 2),
+
+          // Overlay: unser eigenes UI (zeigt nur wenn _showCustomUI)
+          Offstage(
+            offstage: !_showCustomUI,
+            child: CustomChargingPanel(
+              runJS: (code) => _c.runJavaScript(code),
+              onBackToWeb: () => setState(() => _showCustomUI = false),
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-/// ---------------- Dein „Sofortladen“-Screen ----------------
-class CustomChargingScreen extends StatefulWidget {
-  final WebViewController controller;
+/// ---------------- Overlay-Panel (ohne eigenes Scaffold) ----------------
+class CustomChargingPanel extends StatefulWidget {
+  final Future<void> Function(String js) runJS;
   final VoidCallback onBackToWeb;
-  const CustomChargingScreen({super.key, required this.controller, required this.onBackToWeb});
+  const CustomChargingPanel({super.key, required this.runJS, required this.onBackToWeb});
 
   @override
-  State<CustomChargingScreen> createState() => _CustomChargingScreenState();
+  State<CustomChargingPanel> createState() => _CustomChargingPanelState();
 }
 
-class _CustomChargingScreenState extends State<CustomChargingScreen> {
+class _CustomChargingPanelState extends State<CustomChargingPanel> {
   final TextEditingController _minutesCtrl = TextEditingController(text: '30');
   bool _busy = false;
 
-  // >>> NEU: robuster Trigger für "Parameter aktivieren"
   Future<void> _startCharging() async {
     final minutes = _minutesCtrl.text.trim();
     if (minutes.isEmpty) return;
@@ -405,7 +402,21 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
           }
         } catch(e){}
 
-        // 3) DevExtreme-Button "anklicken"
+        // 3) Versuche gezielt den DevExtreme-Handler aufzurufen
+        try {
+          if (window.jQuery) {
+            var inst = jQuery("#PostParametersButton").dxButton("instance");
+            if (inst) {
+              var handler = inst.option("onClick");
+              if (typeof handler === "function") {
+                handler({}); // ruft denselben Code wie Button
+                return "handler_called";
+              }
+            }
+          }
+        } catch(e){ console.log("dxButton handler call failed", e); }
+
+        // 4) DevExtreme-Button "anklicken"
         var btn = document.querySelector("#PostParametersButton");
         if (btn) {
           try { if (window.jQuery) jQuery(btn).trigger('dxclick'); } catch(e){}
@@ -420,7 +431,7 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
     ''';
 
     try {
-      await widget.controller.runJavaScript(js);
+      await widget.runJS(js);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Sofortladung ausgelöst')),
@@ -433,37 +444,46 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Soleco – Schnellstart'),
-        actions: [
-          TextButton.icon(
-            onPressed: widget.onBackToWeb,
-            icon: const Icon(Icons.public),
-            label: const Text('Zur Webseite'),
-          )
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text('Sofortladung mit voller Leistung', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _minutesCtrl,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Minuten', hintText: 'z. B. 30', border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: _busy ? null : _startCharging,
-              icon: const Icon(Icons.flash_on),
-              label: Text(_busy ? 'Bitte warten…' : 'Sofortladen starten'),
-              style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
-            ),
-          ],
+    // Vollflächiges Overlay
+    return Material(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  FilledButton.icon(
+                    onPressed: widget.onBackToWeb,
+                    icon: const Icon(Icons.public),
+                    label: const Text('Zur Webseite'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const Text('Sofortladung mit voller Leistung',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _minutesCtrl,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Minuten',
+                  hintText: 'z. B. 30',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: _busy ? null : _startCharging,
+                icon: const Icon(Icons.flash_on),
+                label: Text(_busy ? 'Bitte warten…' : 'Sofortladen starten'),
+                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+              ),
+            ],
+          ),
         ),
       ),
     );

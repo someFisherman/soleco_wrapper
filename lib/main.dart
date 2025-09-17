@@ -2,12 +2,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 void main() => runApp(const App());
 
-/// ----------------------------------------------
+/// =============================================
 /// App
-/// ----------------------------------------------
+/// =============================================
 class App extends StatelessWidget {
   const App({super.key});
   @override
@@ -15,15 +16,126 @@ class App extends StatelessWidget {
     return MaterialApp(
       title: 'Soleco',
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
-      home: const WebShell(),
+      home: const Gate(),
     );
   }
 }
 
-/// ----------------------------------------------
-/// WebShell: Lädt die Seite, erkennt Login-Ziel,
-/// und zeigt danach deine eigene UI.
-/// ----------------------------------------------
+/// =============================================
+/// Gate: zeigt entweder Credential-Setup (einmalig)
+/// oder direkt die WebShell
+/// =============================================
+class Gate extends StatefulWidget {
+  const Gate({super.key});
+  @override
+  State<Gate> createState() => _GateState();
+}
+
+class _GateState extends State<Gate> {
+  final storage = const FlutterSecureStorage();
+  bool? hasCreds;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkCreds();
+  }
+
+  Future<void> _checkCreds() async {
+    final u = await storage.read(key: 'soleco_user');
+    final p = await storage.read(key: 'soleco_pass');
+    setState(() => hasCreds = (u?.isNotEmpty == true && p?.isNotEmpty == true));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (hasCreds == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (hasCreds == true) {
+      return const WebShell();
+    }
+    return CredsScreen(onSaved: () => setState(() => hasCreds = true));
+  }
+}
+
+/// =============================================
+/// CredsScreen: Einmal Benutzername/Passwort speichern
+/// =============================================
+class CredsScreen extends StatefulWidget {
+  final VoidCallback onSaved;
+  const CredsScreen({super.key, required this.onSaved});
+  @override
+  State<CredsScreen> createState() => _CredsScreenState();
+}
+
+class _CredsScreenState extends State<CredsScreen> {
+  final storage = const FlutterSecureStorage();
+  final _formKey = GlobalKey<FormState>();
+  final _user = TextEditingController();
+  final _pass = TextEditingController();
+  bool _busy = false;
+
+  Future<void> _save() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _busy = true);
+    await storage.write(key: 'soleco_user', value: _user.text.trim());
+    await storage.write(key: 'soleco_pass', value: _pass.text);
+    setState(() => _busy = false);
+    widget.onSaved();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pad = MediaQuery.of(context).size.width > 500 ? 32.0 : 16.0;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Soleco Login speichern')),
+      body: Padding(
+        padding: EdgeInsets.all(pad),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              const Text('Bitte einmalig deine Soleco-Zugangsdaten eingeben. '
+                  'Die App loggt dich danach automatisch ein.',
+                  style: TextStyle(fontSize: 14)),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _user,
+                decoration: const InputDecoration(
+                  labelText: 'Benutzername / E-Mail',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'Benutzername erforderlich' : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _pass,
+                decoration: const InputDecoration(
+                  labelText: 'Passwort',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+                validator: (v) => (v == null || v.isEmpty) ? 'Passwort erforderlich' : null,
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: _busy ? null : _save,
+                icon: const Icon(Icons.save),
+                label: Text(_busy ? 'Speichere…' : 'Speichern'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// =============================================
+/// WebShell: Lädt Seite, Auto-Login bei Bedarf,
+/// zeigt nach Login deine „Sofortladen“-UI.
+/// =============================================
 class WebShell extends StatefulWidget {
   const WebShell({super.key});
   @override
@@ -32,34 +144,40 @@ class WebShell extends StatefulWidget {
 
 class _WebShellState extends State<WebShell> {
   static const String startUrl = 'https://soleco-optimizer.ch/VehicleAppointments';
+  final storage = const FlutterSecureStorage();
   late final WebViewController _c;
 
   bool _loading = true;
-  bool _showCustomUI = false; // wenn wahr, zeigen wir nur noch den "Sofortladen"-Screen
+  bool _showCustomUI = false;
 
   @override
   void initState() {
     super.initState();
 
-    // iOS/Android WebView initialisieren
     _c = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0x00000000))
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageStarted: (_) => setState(() => _loading = true),
-          onPageFinished: (url) async {
+          onPageStarted: (u) => setState(() => _loading = true),
+          onPageFinished: (u) async {
             setState(() => _loading = false);
-            // Wenn wir auf der Zielseite sind (nach Login), wechsel auf Custom-UI
-            if (url.contains('VehicleAppointments')) {
-              setState(() => _showCustomUI = true);
+
+            // 1) Wenn Login-Seite erkannt -> Auto-Login versuchen
+            if (_looksLikeLoginUrl(u)) {
+              await _tryAutoLogin();
+              return;
+            }
+
+            // 2) Wenn Zielseite nach Login -> Custom UI zeigen
+            if (u.contains('VehicleAppointments')) {
+              if (mounted) setState(() => _showCustomUI = true);
             }
           },
-          onNavigationRequest: (request) {
-            final url = request.url;
-            // tel:, mailto: usw. im System öffnen
-            if (url.startsWith('tel:') || url.startsWith('mailto:')) {
-              launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+          onNavigationRequest: (req) {
+            final u = req.url;
+            if (u.startsWith('tel:') || u.startsWith('mailto:')) {
+              launchUrl(Uri.parse(u), mode: LaunchMode.externalApplication);
               return NavigationDecision.prevent;
             }
             return NavigationDecision.navigate;
@@ -69,22 +187,87 @@ class _WebShellState extends State<WebShell> {
       ..loadRequest(Uri.parse(startUrl));
   }
 
+  bool _looksLikeLoginUrl(String url) {
+    final u = url.toLowerCase();
+    // sehr großzügig: alles was "login" oder "signin" enthält
+    return u.contains('login') || u.contains('signin') || u.contains('account/login');
+  }
+
+  Future<void> _tryAutoLogin() async {
+    final user = await storage.read(key: 'soleco_user');
+    final pass = await storage.read(key: 'soleco_pass');
+    if (user == null || pass == null) return;
+
+    // Dieses JS sucht übliche Login-Felder (email/username + password),
+    // füllt sie und submit-t das erste Formular.
+    final js = '''
+      (function(){
+        try {
+          function setInput(el, val){
+            if(!el) return false;
+            el.focus();
+            el.value = val;
+            try {
+              el.dispatchEvent(new Event('input', {bubbles:true}));
+              el.dispatchEvent(new Event('change', {bubbles:true}));
+              var ev = document.createEvent('HTMLEvents'); ev.initEvent('keyup', true, false); el.dispatchEvent(ev);
+            } catch(e){}
+            return true;
+          }
+
+          var u = document.querySelector("input[type='email'], input[name*='user'], input[name*='email'], input[id*='user'], input[id*='email']");
+          var p = document.querySelector("input[type='password'], input[name*='pass'], input[id*='pass']");
+
+          var okU = setInput(u, "${_jsEscape(user)}");
+          var okP = setInput(p, "${_jsEscape(pass)}");
+
+          // versuche sichtbaren Login-Button
+          var btn = document.querySelector("button[type='submit'], input[type='submit'], button[class*='login'], button[id*='login']");
+          if(btn){ btn.click(); return; }
+
+          // sonst Formular submitten
+          var form = (u && u.form) || (p && p.form) || document.querySelector("form");
+          if(form){ form.submit(); }
+        } catch(e){ console.log('autologin error', e); }
+      })();
+    ''';
+
+    await _c.runJavaScript(js);
+  }
+
+  String _jsEscape(String s) => s.replaceAll(r'\', r'\\').replaceAll("'", r"\'").replaceAll('`', r'\`');
+
   Future<void> _reload() => _c.reload();
 
   @override
   Widget build(BuildContext context) {
-    // Wenn _showCustomUI == true, zeigen wir nur noch unseren Screen
     if (_showCustomUI) {
-      return CustomChargingScreen(controller: _c, onBackToWeb: () {
-        setState(() => _showCustomUI = false);
-      });
+      return CustomChargingScreen(
+        controller: _c,
+        onBackToWeb: () => setState(() => _showCustomUI = false),
+      );
     }
 
-    // Sonst: normale WebView mit Progress
     return Scaffold(
       appBar: AppBar(
         title: const Text('Soleco'),
-        actions: [IconButton(onPressed: _reload, icon: const Icon(Icons.refresh))],
+        actions: [
+          IconButton(onPressed: _reload, icon: const Icon(Icons.refresh)),
+          IconButton(
+            tooltip: 'Login ändern',
+            icon: const Icon(Icons.manage_accounts),
+            onPressed: () async {
+              // Zugangsdaten löschen und zurück zum Gate
+              await storage.delete(key: 'soleco_user');
+              await storage.delete(key: 'soleco_pass');
+              if (!mounted) return;
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const Gate()),
+                (route) => false,
+              );
+            },
+          )
+        ],
       ),
       body: Stack(
         children: [
@@ -96,12 +279,9 @@ class _WebShellState extends State<WebShell> {
   }
 }
 
-/// ----------------------------------------------
-/// CustomChargingScreen: Deine einfache UI
-/// - Eingabe "Minuten"
-/// - Button "Sofortladen starten"
-/// - Button "Zur Webseite" (falls du mal wieder reinsehen willst)
-/// ----------------------------------------------
+/// =============================================
+/// Deine „Sofortladen“-Seite (wie zuvor)
+/// =============================================
 class CustomChargingScreen extends StatefulWidget {
   final WebViewController controller;
   final VoidCallback onBackToWeb;
@@ -118,33 +298,26 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
   Future<void> _startCharging() async {
     final minutes = _minutesCtrl.text.trim();
     if (minutes.isEmpty) return;
-
     setState(() => _busy = true);
 
-    // Dieses JS setzt "Minutes" und klickt "Parameter aktivieren".
-    // Es versucht erst die DevExtreme-Form zu nutzen, ansonsten Fallbacks.
     final js = '''
       (function(){
         try {
-          var m = parseInt("$minutes", 10);
-          if (isNaN(m) || m < 0) m = 0;
+          var m = parseInt("$minutes",10); if(isNaN(m)||m<0) m=0;
 
-          // 1) DevExtreme-Form (falls vorhanden)
+          // DevExtreme-Form
           try {
             if (window.DevExpress && window.jQuery) {
               var form = jQuery("#parameterform").dxForm("instance");
-              if (form && form.updateData) {
-                form.updateData("Minutes", m);
-              }
+              if (form && form.updateData) { form.updateData("Minutes", m); }
             }
-          } catch(e) { console.log("dxForm update failed", e); }
+          } catch(e){}
 
-          // 2) Hidden Input (falls vorhanden)
+          // Hidden input
           var hidden = document.querySelector("input[name='Minutes']");
-          if (hidden) { hidden.value = m; }
+          if (hidden) hidden.value = m;
 
-          // 3) Sichtbares Eingabefeld (Fallback)
-          // Versuche ein passendes Input zu finden und 'input' Event zu feuern
+          // sichtbares Feld (Fallback)
           var vis = document.querySelector("input#Minutes, input.dx-texteditor-input");
           if (vis) {
             vis.value = m;
@@ -155,10 +328,10 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
             } catch(e){}
           }
 
-          // 4) Button klicken
+          // Button
           var btn = document.querySelector("#PostParametersButton, .dx-button");
-          if (btn) { btn.click(); }
-        } catch(e) { console.log("JS error", e); }
+          if (btn) btn.click();
+        } catch(e){ console.log("start charge error", e); }
       })();
     ''';
 
@@ -169,12 +342,6 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
           SnackBar(content: Text('Sofortladung für $minutes Minuten ausgelöst')),
         );
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Fehler beim Auslösen der Sofortladung')),
-        );
-      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -183,7 +350,6 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
   @override
   Widget build(BuildContext context) {
     final pad = MediaQuery.of(context).size.width > 500 ? 24.0 : 16.0;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Soleco – Schnellstart'),
@@ -200,19 +366,12 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
-              'Sofortladung mit voller Leistung',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-            ),
+            const Text('Sofortladung mit voller Leistung', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
             const SizedBox(height: 12),
             TextField(
               controller: _minutesCtrl,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Minuten',
-                hintText: 'z. B. 30',
-                border: OutlineInputBorder(),
-              ),
+              decoration: const InputDecoration(labelText: 'Minuten', hintText: 'z. B. 30', border: OutlineInputBorder()),
             ),
             const SizedBox(height: 16),
             ElevatedButton.icon(
@@ -220,12 +379,6 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
               icon: const Icon(Icons.flash_on),
               label: Text(_busy ? 'Bitte warten…' : 'Sofortladen starten'),
               style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Hinweis: Du musst einmal eingeloggt sein. Danach merkt sich die Seite in der Regel die Session (Cookies). '
-              'Wenn dich die App nach einem Schließen wieder ausloggt, sag mir Bescheid – dann bauen wir ein Cookie-Backup ein.',
-              style: const TextStyle(fontSize: 12),
             ),
           ],
         ),

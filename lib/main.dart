@@ -1,10 +1,13 @@
-import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:webview_flutter/webview_flutter.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-void main() => runApp(const App());
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const App());
+}
 
 class App extends StatelessWidget {
   const App({super.key});
@@ -18,10 +21,7 @@ class App extends StatelessWidget {
   }
 }
 
-/// ----------------------------------------------------
-/// Gate: fragt einmalig Zugangsdaten ab, speichert sie,
-/// startet dann die WebShell
-/// ----------------------------------------------------
+/// ---------- Gate: prüft, ob Zugangsdaten gespeichert sind ----------
 class Gate extends StatefulWidget {
   const Gate({super.key});
   @override
@@ -54,6 +54,7 @@ class _GateState extends State<Gate> {
   }
 }
 
+/// ---------- Zugangsdaten einmalig speichern ----------
 class CredsScreen extends StatefulWidget {
   final VoidCallback onSaved;
   const CredsScreen({super.key, required this.onSaved});
@@ -115,11 +116,7 @@ class _CredsScreenState extends State<CredsScreen> {
   }
 }
 
-/// ----------------------------------------------------
-/// WebShell: lädt VehicleAppointments, macht bei Bedarf
-/// **gezielten Azure B2C Auto-Login** und zeigt danach
-/// deinen „Sofortladen“-Screen.
-/// ----------------------------------------------------
+/// ---------- WebShell mit InAppWebView + Cookie-Persistenz ----------
 class WebShell extends StatefulWidget {
   const WebShell({super.key});
   @override
@@ -127,88 +124,113 @@ class WebShell extends StatefulWidget {
 }
 
 class _WebShellState extends State<WebShell> {
-  // Direkt die Zielseite: wenn nicht eingeloggt, leitet Soleco zu B2C um
   static const String startUrl = 'https://soleco-optimizer.ch/VehicleAppointments';
+  static const cookieStoreKey = 'cookie_jar_v1'; // SecureStorage-Key
 
   final storage = const FlutterSecureStorage();
-  late final WebViewController _c;
+  final cookieManager = CookieManager.instance();
+
+  InAppWebViewController? _web;
   bool _loading = true;
   bool _showCustomUI = false;
-  bool _didAutoLogin = false; // wichtig: nur EIN Versuch pro Login-Seite
+  bool _didAutoLogin = false;
 
   @override
   void initState() {
     super.initState();
-
-    _c = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0x00000000))
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageStarted: (_) => setState(() => _loading = true),
-          onPageFinished: (url) async {
-            setState(() => _loading = false);
-
-            // 1) Bereits eingeloggt? Dann kommt VehicleAppointments -> zeige Custom UI
-            if (url.contains('VehicleAppointments')) {
-              if (mounted) setState(() => _showCustomUI = true);
-              return;
-            }
-
-            // 2) Stehen wir auf der B2C-Loginseite? (DOM-Check!)
-            final isB2C = await _isB2CLoginDom();
-            if (isB2C && !_didAutoLogin) {
-              _didAutoLogin = true; // nur einmal pro Besuch
-              await _autoLoginB2C();
-              return;
-            }
-
-            // 3) Falls wir nach Login wieder irgendwo anders landen, einfach laufen lassen.
-          },
-          onNavigationRequest: (req) {
-            final u = req.url;
-            if (u.startsWith('tel:') || u.startsWith('mailto:')) {
-              launchUrl(Uri.parse(u), mode: LaunchMode.externalApplication);
-              return NavigationDecision.prevent;
-            }
-            return NavigationDecision.navigate;
-          },
-        ),
-      )
-      ..loadRequest(Uri.parse(startUrl));
   }
 
-  Future<bool> _isB2CLoginDom() async {
-    // Prüfe, ob das B2C-Login-Formular im DOM ist (IDs aus deinem HTML: #localAccountForm, #UserId, #password, #next)
+  // ---------- Cookies wiederherstellen (vor dem ersten Laden) ----------
+  Future<void> _restoreCookies() async {
+    final raw = await storage.read(key: cookieStoreKey);
+    if (raw == null) return;
+    final List list = jsonDecode(raw);
+    for (final m in list) {
+      try {
+        final domain = (m['domain'] as String?) ?? '';
+        final name = (m['name'] as String?) ?? '';
+        final value = (m['value'] as String?) ?? '';
+        final path = (m['path'] as String?) ?? '/';
+        final isSecure = (m['isSecure'] as bool?) ?? true;
+        final isHttpOnly = (m['isHttpOnly'] as bool?) ?? false;
+        final expiresDate = (m['expiresDate'] as int?); // epoch seconds
+        final sameSiteStr = (m['sameSite'] as String?) ?? 'LAX';
+        HTTPCookieSameSitePolicy? sameSite;
+        switch (sameSiteStr.toUpperCase()) {
+          case 'NONE': sameSite = HTTPCookieSameSitePolicy.NONE; break;
+          case 'STRICT': sameSite = HTTPCookieSameSitePolicy.STRICT; break;
+          default: sameSite = HTTPCookieSameSitePolicy.LAX;
+        }
+
+        // zum Setzen braucht setCookie eine URL – wir bauen eine passende:
+        final urlForCookie = Uri.parse('https://${domain.startsWith('.') ? domain.substring(1) : domain}$path');
+
+        await cookieManager.setCookie(
+          url: WebUri(urlForCookie.toString()),
+          name: name,
+          value: value,
+          domain: domain,
+          path: path,
+          isSecure: isSecure,
+          isHttpOnly: isHttpOnly,
+          sameSite: sameSite,
+          // expiresDate erwartet epoch seconds
+          expiresDate: expiresDate,
+        );
+      } catch (_) {}
+    }
+  }
+
+  // ---------- Cookies speichern (nach Login / wenn wir auf Zielseite sind) ----------
+  Future<void> _persistCookiesForCurrentUrl(String url) async {
     try {
-      final res = await _c.runJavaScriptReturningResult('''
+      final cookies = await cookieManager.getCookies(url: WebUri(url));
+      // wir speichern ALLE Cookies, die wir unterwegs sehen (auch b2c-Domain)
+      final jsonList = cookies.map((c) => {
+        'name': c.name,
+        'value': c.value,
+        'domain': c.domain,
+        'path': c.path,
+        'isSecure': c.isSecure,
+        'isHttpOnly': c.isHttpOnly,
+        'expiresDate': c.expiresDate, // kann null sein (Session-Cookie)
+        'sameSite': c.sameSite?.name.toUpperCase(),
+      }).toList();
+      await storage.write(key: cookieStoreKey, value: jsonEncode(jsonList));
+    } catch (_) {}
+  }
+
+  // ---------- Erkennung der Azure B2C Loginseite im DOM ----------
+  Future<bool> _isB2CLoginDom() async {
+    if (_web == null) return false;
+    try {
+      final res = await _web!.evaluateJavascript(source: '''
         (function(){
           var f=document.getElementById('localAccountForm');
           var u=document.getElementById('UserId');
           var p=document.getElementById('password');
           var n=document.getElementById('next');
-          return !!(f && u && p && n);
+          return !!(f&&u&&p&&n);
         })();
       ''');
-      // iOS gibt als bool manchmal 0/1 oder true/false zurück
-      return res.toString() == 'true' || res.toString() == '1';
+      return res == true || res.toString() == 'true' || res.toString() == '1';
     } catch (_) {
       return false;
     }
   }
 
+  // ---------- Auto-Login auf der B2C-Seite ----------
   Future<void> _autoLoginB2C() async {
     final user = await storage.read(key: 'soleco_user');
     final pass = await storage.read(key: 'soleco_pass');
-    if (user == null || pass == null) return;
+    if (user == null || pass == null || _web == null) return;
 
-    // Polling bis Elemente sicher da sind, dann befüllen & klicken (IDs exakt aus deinem HTML)
     final js = '''
       (function(){
+        function esc(s){return s.replaceAll('\\\\','\\\\\\\\').replaceAll('`','\\\\`').replaceAll(\"'\",\"\\\\'\");}
         function setVal(el, val){
           if(!el) return false;
-          el.focus();
-          el.value = val;
+          el.focus(); el.value = val;
           try{
             el.dispatchEvent(new Event('input',{bubbles:true}));
             el.dispatchEvent(new Event('change',{bubbles:true}));
@@ -221,8 +243,8 @@ class _WebShellState extends State<WebShell> {
           var p=document.getElementById('password');
           var btn=document.getElementById('next');
           if(u && p && btn){
-            setVal(u, '${_js(user)}');
-            setVal(p, '${_js(pass)}');
+            setVal(u, '${_esc(user)}');
+            setVal(p, '${_esc(pass)}');
             btn.click();
             return true;
           }
@@ -237,56 +259,107 @@ class _WebShellState extends State<WebShell> {
         }
       })();
     ''';
-    await _c.runJavaScript(js);
+    await _web!.evaluateJavascript(source: js);
   }
 
-  String _js(String s) => s.replaceAll(r'\', r'\\').replaceAll("'", r"\'").replaceAll('`', r'\`');
+  String _esc(String s) => s.replaceAll(r'\', r'\\').replaceAll('`', r'\`').replaceAll("'", r"\'");
 
-  Future<void> _reload() => _c.reload();
-
+  // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
     if (_showCustomUI) {
       return CustomChargingScreen(
-        controller: _c,
+        controller: _web,
         onBackToWeb: () => setState(() => _showCustomUI = false),
       );
     }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Soleco'),
         actions: [
-          IconButton(onPressed: _reload, icon: const Icon(Icons.refresh)),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _web?.reload(),
+          ),
           IconButton(
             tooltip: 'Login ändern',
             icon: const Icon(Icons.manage_accounts),
             onPressed: () async {
               await storage.delete(key: 'soleco_user');
               await storage.delete(key: 'soleco_pass');
-              if (!mounted) return;
-              Navigator.of(context).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (_) => const Gate()),
-                (_) => false,
-              );
+              await storage.delete(key: cookieStoreKey);
+              if (mounted) {
+                Navigator.of(context).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => const Gate()),
+                  (_) => false,
+                );
+              }
             },
-          )
+          ),
         ],
       ),
-      body: Stack(
-        children: [
-          WebViewWidget(controller: _c),
-          if (_loading) const LinearProgressIndicator(minHeight: 2),
-        ],
+      body: InAppWebView(
+        initialUrlRequest: URLRequest(url: WebUri(startUrl)),
+        initialSettings: InAppWebViewSettings(
+          javaScriptEnabled: true,
+          incognito: false,                   // wichtig: NICHT inkognito
+          cacheEnabled: true,
+          sharedCookiesEnabled: true,         // iOS: Cookies mit WK-Store teilen
+          thirdPartyCookiesEnabled: true,     // sicherheitshalber
+          mediaPlaybackRequiresUserGesture: true,
+        ),
+        onWebViewCreated: (controller) async {
+          _web = controller;
+          await _restoreCookies();            // <<< Cookies vor dem ersten Laden setzen
+        },
+        shouldOverrideUrlLoading: (controller, navAction) async {
+          final url = navAction.request.url?.toString() ?? '';
+          if (url.startsWith('tel:') || url.startsWith('mailto:')) {
+            await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+            return NavigationActionPolicy.CANCEL;
+          }
+          return NavigationActionPolicy.ALLOW;
+        },
+        onLoadStart: (controller, url) {
+          setState(() => _loading = true);
+        },
+        onLoadStop: (controller, url) async {
+          setState(() => _loading = false);
+          final current = url?.toString() ?? '';
+
+          // Wenn wir auf der B2C-Loginseite stehen -> Auto-Login (nur 1x pro Besuch)
+          if (!_didAutoLogin && await _isB2CLoginDom()) {
+            _didAutoLogin = true;
+            await _autoLoginB2C();
+            return;
+          }
+
+          // Wenn wir auf der Zielseite sind -> Cookies sichern + Custom UI anzeigen
+          if (current.contains('VehicleAppointments')) {
+            await _persistCookiesForCurrentUrl(current);
+            if (mounted) setState(() => _showCustomUI = true);
+            return;
+          }
+
+          // Auf jeder Seite, die wir besuchen, Cookies einsammeln (damit wir alle relevanten Domains haben)
+          await _persistCookiesForCurrentUrl(current);
+        },
+        onReceivedError: (controller, request, error) {
+          // optional: Fehler-UI anzeigen
+        },
+        onProgressChanged: (controller, progress) {
+          setState(() => _loading = progress < 100);
+        },
       ),
+      bottomNavigationBar: _loading ? const LinearProgressIndicator(minHeight: 2) : null,
     );
   }
 }
 
-/// ----------------------------------------------------
-/// Dein einfacher „Sofortladen“-Screen
-/// ----------------------------------------------------
+/// ---------- Dein „Sofortladen“-Screen ----------
 class CustomChargingScreen extends StatefulWidget {
-  final WebViewController controller;
+  final InAppWebViewController? controller;
   final VoidCallback onBackToWeb;
   const CustomChargingScreen({super.key, required this.controller, required this.onBackToWeb});
 
@@ -299,8 +372,10 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
   bool _busy = false;
 
   Future<void> _startCharging() async {
+    if (widget.controller == null) return;
     final minutes = _minutesCtrl.text.trim();
     if (minutes.isEmpty) return;
+
     setState(() => _busy = true);
 
     final js = '''
@@ -308,7 +383,7 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
         try {
           var m = parseInt("$minutes",10); if(isNaN(m)||m<0) m=0;
 
-          // DevExtreme-Form (falls vorhanden)
+          // DevExtreme-Form, falls vorhanden
           try {
             if (window.DevExpress && window.jQuery) {
               var form = jQuery("#parameterform").dxForm("instance");
@@ -316,7 +391,7 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
             }
           } catch(e){}
 
-          // Hidden input (immer vorhanden laut HTML)
+          // Hidden input (laut HTML vorhanden)
           var hidden = document.querySelector("input[name='Minutes']");
           if (hidden) hidden.value = m;
 
@@ -332,14 +407,14 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
           }
 
           // Klick auf „Parameter aktivieren“
-          var btn = document.querySelector("#PostParametersButton, .dx-button[id='PostParametersButton']");
+          var btn = document.querySelector("#PostParametersButton, .dx-button#PostParametersButton");
           if (btn) btn.click();
         } catch(e){ console.log("start charge error", e); }
       })();
     ''';
 
     try {
-      await widget.controller.runJavaScript(js);
+      await widget.controller!.evaluateJavascript(source: js);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Sofortladung für $minutes Minuten ausgelöst')),

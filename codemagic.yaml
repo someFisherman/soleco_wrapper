@@ -6,18 +6,31 @@ workflows:
       flutter: stable
       xcode: latest
     scripts:
-      - name: Install dependencies
-        script: flutter pub get
-
-      - name: Ensure iOS platform exists
-        script: flutter create . --platforms=ios
-
-      - name: Build iOS (no codesign)
+      - name: Prepare Flutter
         script: |
+          flutter --version
+          flutter pub get
+          # falls ios/ noch fehlt:
+          flutter create . --platforms=ios
+
+      - name: Build iOS (no codesign) -> produce .app
+        script: |
+          set -euxo pipefail
           flutter clean
-          flutter build ipa --release --no-codesign
-          echo "Listing IPA files:"
-          find build/ios/ipa -name "*.ipa" -print
+          flutter build ios --release --no-codesign
+          echo "Built app at: build/ios/iphoneos/Runner.app"
+          ls -la build/ios/iphoneos || true
+
+      - name: Package unsigned IPA manually
+        script: |
+          set -euxo pipefail
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          mkdir -p out/Payload
+          cp -R "$APP_PATH" out/Payload/
+          (cd out && zip -r SolecoWrapper-unsigned.ipa Payload)
+          rm -rf out/Payload
+          echo "Final artifacts in out/:"
+          ls -la out
 
     artifacts:
-      - build/ios/ipa/*.ipa
+      - out/*.ipa

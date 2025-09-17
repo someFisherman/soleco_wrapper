@@ -5,8 +5,6 @@ workflows:
     environment:
       flutter: stable
       xcode: latest
-    cache:
-      cache_default_paths: true
     scripts:
       - name: Flutter packages
         script: flutter pub get

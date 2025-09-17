@@ -161,10 +161,12 @@ class _WebShellState extends State<WebShell> {
               }
             }
 
-            // Eingeloggt -> Cookies sichern + Hub anzeigen
+            // Eingeloggt -> Cookies sichern
             if (url.contains('VehicleAppointments')) {
               await _persistCookies(url);
-              if (mounted) {
+              if (!mounted) return;
+              // NICHT zum Hub springen, wenn wir gerade im Picker/Laden sind (Seite lädt nach Aktion oft neu)
+              if (!_showCharging && !_showVehiclePicker) {
                 setState(() {
                   _showHub = true;
                   _showVehiclePicker = false;
@@ -252,7 +254,7 @@ class _WebShellState extends State<WebShell> {
           return !!(f&&u&&p&&n);
         })();
       ''');
-    return res.toString() == 'true' || res.toString() == '1';
+      return res.toString() == 'true' || res.toString() == '1';
     } catch (_) { return false; }
   }
 
@@ -321,54 +323,68 @@ class _WebShellState extends State<WebShell> {
     } catch (_) {}
   }
 
-  /// ---------- Fahrzeuge aus #vehicleSelection holen ----------
+  /// ---------- Fahrzeuge aus #vehicleSelection holen (robust) ----------
   Future<List<VehicleItem>> _scanVehicles() async {
     final js = r'''
       (function(){
-        function clean(t){return (t||'').replace(/\s+/g,' ').trim();}
+        function clean(t){return (t||'').toString().replace(/\s+/g,' ').trim();}
         var root = document.getElementById('vehicleSelection');
+        var out = [];
         if(!root){ return JSON.stringify({ok:false, reason:'no_element', list:[]}); }
 
-        var items = [];
-
-        // 1) Versuch über DevExtreme-API
+        // 1) DevExtreme-API (beachtet displayExpr / dataSource.items())
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst = jQuery(root).dxSelectBox('instance');
             if(inst){
-              var arr = inst.option('items') || inst.option('dataSource') || [];
-              if(Array.isArray(arr) && arr.length){
-                arr.forEach(function(it, idx){
-                  if(typeof it === 'object'){
-                    var label = clean(it.text || it.name || it.label || it.title || (''+it.value) || (''+it.id) || ('Item '+(idx+1)));
-                    var value = (it.value!=null)? it.value : (it.id!=null? it.id : label);
-                    items.push({label:label, value:''+value});
-                  } else {
-                    items.push({label:clean(''+it), value:''+it});
+              var ds = inst.option('dataSource');
+              var items = inst.option('items');
+              var arr = [];
+              if (Array.isArray(items)) arr = items;
+              else if (ds && typeof ds.items === 'function') arr = ds.items();
+              else if (ds && Array.isArray(ds._items)) arr = ds._items;
+              var displayExpr = inst.option('displayExpr');
+
+              if (Array.isArray(arr) && arr.length){
+                for (var i=0;i<arr.length;i++){
+                  var it = arr[i], label = '';
+                  if (typeof displayExpr === 'string' && it && typeof it === 'object' && displayExpr in it){
+                    label = clean(it[displayExpr]);
+                  } else if (typeof displayExpr === 'function'){
+                    try { label = clean(displayExpr(it)); } catch(e){}
                   }
-                });
-                return JSON.stringify({ok:true, from:'items', list:items});
+                  if (!label){
+                    if (typeof it === 'object'){
+                      label = clean(it.text || it.name || it.label || it.title || it.value || it.id || ('Fahrzeug '+(i+1)));
+                    } else {
+                      label = clean(it);
+                    }
+                  }
+                  out.push({label: label, index: i});
+                }
+                return JSON.stringify({ok:true, from:'items', list:out});
               }
             }
           }
         }catch(e){}
 
-        // 2) Fallback: DOM aus dem Popup lesen
+        // 2) Fallback: Popup öffnen und Texte aus DOM holen
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
-            var inst = jQuery(root).dxSelectBox('instance');
-            try{ inst.option('opened', true); }catch(e){}
+            var inst2 = jQuery(root).dxSelectBox('instance');
+            if(inst2) inst2.option('opened', true);
           }
         }catch(e){}
+
         var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item .dx-item-content');
         if(nodes.length===0){
           nodes = document.querySelectorAll('#vehicleSelection .dx-selectbox-popup .dx-item .dx-item-content, .dx-selectbox-popup .dx-item .dx-item-content');
         }
-        nodes.forEach(function(n,i){
-          var t = clean(n.textContent);
-          if(t){ items.push({label:t, value:t}); }
-        });
-        return JSON.stringify({ok:true, from:'dom', list:items});
+        for(var j=0;j<nodes.length;j++){
+          var t = clean(nodes[j].textContent);
+          if(t){ out.push({label:t, index:j}); }
+        }
+        return JSON.stringify({ok:true, from:'dom', list:out});
       })();
     ''';
 
@@ -377,68 +393,61 @@ class _WebShellState extends State<WebShell> {
       final jsonStr = res is String ? res : res.toString();
       final obj = jsonDecode(jsonStr) as Map<String, dynamic>;
       final list = (obj['list'] as List).cast<Map<String, dynamic>>();
-      return list.map((m) => VehicleItem(label: m['label'] as String, value: m['value'] as String)).toList();
+      return list.map((m) => VehicleItem(label: m['label'] as String, index: (m['index'] as num).toInt())).toList();
     } catch (_) {
       return [];
     }
   }
 
-  /// Auswahl in #vehicleSelection setzen (per Value/Text)
+  /// Auswahl in #vehicleSelection setzen – erst API (selectedItem), dann DOM-Klick (Index)
   Future<String> _selectVehicle(VehicleItem v) async {
     final js = '''
       (function(){
-        function clean(t){return (t||'').replace(/\\s+/g,' ').trim();}
+        var idx = ${v.index};
         var root = document.getElementById('vehicleSelection');
         if(!root) return 'no_element';
 
-        function setViaItems(){
-          try{
-            if(window.jQuery && jQuery.fn.dxSelectBox){
-              var inst = jQuery(root).dxSelectBox('instance');
-              if(!inst) return 'no_instance';
-              var arr = inst.option('items') || inst.option('dataSource') || [];
-              for(var i=0;i<arr.length;i++){
-                var it = arr[i], label='', val=null;
-                if(typeof it==='object'){
-                  label = clean(it.text || it.name || it.label || it.title || (''+it.value) || (''+it.id));
-                  val   = (it.value!=null)? it.value : (it.id!=null? it.id : label);
-                }else{
-                  label = clean(''+it); val = it;
-                }
-                if(label===clean('${_js(v.label)}') || (''+val)===('${_js(v.value)}')){
-                  inst.option('value', val);
-                  try{ inst.option('opened', false); }catch(e){}
-                  try{ jQuery(root).trigger('change'); }catch(e){}
-                  return 'set_by_items';
+        // 1) DevExtreme-API per selectedItem / valueExpr
+        try{
+          if(window.jQuery && jQuery.fn.dxSelectBox){
+            var inst = jQuery(root).dxSelectBox('instance');
+            if(inst){
+              var ds = inst.option('dataSource');
+              var items = inst.option('items');
+              var arr = [];
+              if (Array.isArray(items)) arr = items;
+              else if (ds && typeof ds.items === 'function') arr = ds.items();
+              else if (ds && Array.isArray(ds._items)) arr = ds._items;
+
+              if (Array.isArray(arr) && arr.length>idx){
+                var item = arr[idx];
+                try{ inst.option('selectedItem', item); }catch(e){}
+                var sel = inst.option('selectedItem');
+                if (sel===item) { try{ inst.option('opened', false);}catch(e){} return 'set_selectedItem'; }
+
+                var valueExpr = inst.option('valueExpr');
+                if (typeof valueExpr==='string' && item && item[valueExpr] !== undefined){
+                  inst.option('value', item[valueExpr]);
+                  try{ inst.option('opened', false);}catch(e){}
+                  return 'set_valueExpr';
                 }
               }
-              return 'not_in_items';
-            }
-          }catch(e){}
-          return 'no_items_api';
-        }
-
-        var r = setViaItems();
-        if(r==='set_by_items') return r;
-
-        // Fallback: DOM klicken
-        try{
-          var inst = (window.jQuery && jQuery.fn.dxSelectBox) ? jQuery(root).dxSelectBox('instance') : null;
-          try{ inst && inst.option('opened', true); }catch(e){}
-          var target = '${_js(v.label)}';
-          var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item .dx-item-content');
-          if(nodes.length===0){
-            nodes = document.querySelectorAll('#vehicleSelection .dx-selectbox-popup .dx-item .dx-item-content, .dx-selectbox-popup .dx-item .dx-item-content');
-          }
-          for(var j=0;j<nodes.length;j++){
-            var t = clean(nodes[j].textContent);
-            if(t===clean(target)){
-              nodes[j].click();
-              return 'clicked_dom';
             }
           }
         }catch(e){}
-        return r;
+
+        // 2) Fallback: Popup öffnen und gewünschten Listeneintrag klicken
+        try{
+          var inst2 = (window.jQuery && jQuery.fn.dxSelectBox) ? jQuery(root).dxSelectBox('instance') : null;
+          try{ inst2 && inst2.option('opened', true); }catch(e){}
+          var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item');
+          if(nodes.length>idx){
+            nodes[idx].click();
+            return 'clicked_dom';
+          }
+        }catch(e){}
+
+        return 'failed';
       })();
     ''';
 
@@ -514,7 +523,6 @@ class _WebShellState extends State<WebShell> {
               onAuto: () async {
                 final list = await _scanVehicles();
                 if (list.length == 1) {
-                  // auto-select und direkt zum Laden
                   await _selectVehicle(list.first);
                   await Future.delayed(const Duration(milliseconds: 250));
                   setState(() { _showHub = false; _showCharging = true; });
@@ -528,7 +536,7 @@ class _WebShellState extends State<WebShell> {
               },
             ),
 
-          // Fahrzeug-Picker (nur #vehicleSelection)
+          // Fahrzeug-Picker (aus #vehicleSelection)
           if (_showVehiclePicker)
             VehiclePickerOverlay(
               vehicles: _vehicles,
@@ -567,7 +575,7 @@ class _WebShellState extends State<WebShell> {
   }
 }
 
-/// ---------------- HUB Overlay (schön & simpel) ----------------
+/// ---------------- HUB Overlay ----------------
 class HubOverlay extends StatelessWidget {
   final VoidCallback onWebsite;
   final VoidCallback onAuto;
@@ -695,9 +703,9 @@ class VehiclePickerOverlay extends StatelessWidget {
 }
 
 class VehicleItem {
-  final String label; // z. B. "Tesla", "My Benz"
-  final String value; // dxSelectBox value (oder fallback = label)
-  VehicleItem({required this.label, required this.value});
+  final String label; // z. B. "Audi Q6"
+  final int index;    // Position in der dxSelectBox
+  VehicleItem({required this.label, required this.index});
 }
 
 /// ---------------- Sofortladen-Panel ----------------

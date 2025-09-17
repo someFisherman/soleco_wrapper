@@ -13,23 +13,29 @@ workflows:
           # falls ios/ noch fehlt:
           flutter create . --platforms=ios
 
-      - name: Build iOS (no codesign) -> produce .app
+      - name: Build archive (no codesign)
         script: |
-          set -euxo pipefail
+          set -e
           flutter clean
-          flutter build ios --release --no-codesign
-          echo "Built app at: build/ios/iphoneos/Runner.app"
-          ls -la build/ios/iphoneos || true
+          # Baut ein .xcarchive ohne Signatur (kein Team nötig)
+          flutter build ipa --release --no-codesign
+          echo "Archive tree:"
+          ls -R build/ios/archive || true
 
-      - name: Package unsigned IPA manually
+      - name: Package unsigned IPA from .xcarchive
         script: |
-          set -euxo pipefail
-          APP_PATH="build/ios/iphoneos/Runner.app"
+          set -e
+          APP_PATH="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Runner.app nicht gefunden. Verfügbare Runner.app:"
+            find build -name "Runner.app" -print
+            exit 1
+          fi
           mkdir -p out/Payload
           cp -R "$APP_PATH" out/Payload/
           (cd out && zip -r SolecoWrapper-unsigned.ipa Payload)
           rm -rf out/Payload
-          echo "Final artifacts in out/:"
+          echo "Finale Artefakte:"
           ls -la out
 
     artifacts:

@@ -6,20 +6,40 @@ workflows:
       flutter: stable
       xcode: latest
     scripts:
-      - name: Flutter packages
-        script: flutter pub get
-
-      - name: Build iOS (no codesign)
+      - name: Flutter setup
         script: |
+          flutter --version
+          flutter doctor -v
+
+      - name: Ensure iOS platform & deps
+        script: |
+          # Falls ios/ noch fehlt:
           flutter create . --platforms=ios
+          flutter pub get
+          echo "Contents of ios/:"
+          ls -la ios || true
+          # CocoaPods aufräumen/aktualisieren (robust, auch ohne Codesign)
+          cd ios
+          pod repo update
+          pod install
+          cd ..
+
+      - name: Build iOS (NO codesign)
+        script: |
+          set -e
+          flutter clean
           flutter build ipa --release --no-codesign
-          echo "Listing build/ios:"
-          ls -R build/ios || true
-          echo "Listing build/ios/ipa:"
-          ls -l build/ios/ipa || true
+          echo "Searching for IPA files..."
+          find . -type f -name "*.ipa" -print || true
           mkdir -p out
-          cp build/ios/ipa/*.ipa out/ || echo "No IPA found to copy"
+          # Kopiere ALLE gefundenen IPAs nach out/
+          find . -type f -name "*.ipa" -exec cp {} out/ \; || true
+          # Zusätzlich kompletten iOS-Buildordner als Fallback packen
+          tar -czf out/build-ios.tar.gz build/ios || true
+          echo "Final out/:"
+          ls -la out || true
 
     artifacts:
       - out/*.ipa
       - build/ios/ipa/*.ipa
+      - out/build-ios.tar.gz

@@ -122,7 +122,8 @@ class WebShell extends StatefulWidget {
 }
 
 class _WebShellState extends State<WebShell> {
-  static const String startUrl = 'https://soleco-optimizer.ch/VehicleAppointments';
+  static const String vehicleUrl = 'https://soleco-optimizer.ch/VehicleAppointments';
+  static const String viewsUrl   = 'https://soleco-optimizer.ch/Views';
 
   final storage = const FlutterSecureStorage();
   final cookieMgr = WebviewCookieManager();
@@ -136,8 +137,10 @@ class _WebShellState extends State<WebShell> {
   bool _showCharging = false;       // Sofortladen-Panel
 
   bool _didAutoLogin = false;
+  bool _autoShowHub = true;         // nur 1x nach Login anzeigen
   static const _cookieStoreKey = 'cookie_store_v1';
 
+  String _lastUrl = '';
   List<VehicleItem> _vehicles = const [];
 
   @override
@@ -151,6 +154,7 @@ class _WebShellState extends State<WebShell> {
         NavigationDelegate(
           onPageStarted: (_) => setState(() => _loading = true),
           onPageFinished: (url) async {
+            _lastUrl = url;
             setState(() => _loading = false);
 
             // B2C Login erkannt? -> Auto-Login (einmalig)
@@ -165,13 +169,9 @@ class _WebShellState extends State<WebShell> {
             if (url.contains('VehicleAppointments')) {
               await _persistCookies(url);
               if (!mounted) return;
-              // NICHT zum Hub springen, wenn wir gerade im Picker/Laden sind (Seite lädt nach Aktion oft neu)
-              if (!_showCharging && !_showVehiclePicker) {
-                setState(() {
-                  _showHub = true;
-                  _showVehiclePicker = false;
-                  _showCharging = false;
-                });
+              // Nur beim allerersten Erreichen den Hub automatisch zeigen
+              if (_autoShowHub && !_showCharging && !_showVehiclePicker && !_showHub) {
+                setState(() { _showHub = true; });
               }
               return;
             }
@@ -189,10 +189,10 @@ class _WebShellState extends State<WebShell> {
         ),
       );
 
-    // Cookies wiederherstellen und Seite laden
+    // Cookies wiederherstellen und Vehicle-Seite laden (Soleco leitet dann ggf. zum Login um)
     Future.microtask(() async {
       await _restoreCookies();
-      await _c.loadRequest(Uri.parse(startUrl));
+      await _c.loadRequest(Uri.parse(vehicleUrl));
     });
   }
 
@@ -314,17 +314,30 @@ class _WebShellState extends State<WebShell> {
       }
       setState(() {
         _didAutoLogin = false;
+        _autoShowHub = true; // Beim nächsten erfolgreichen Login wieder einmal anzeigen
         _showHub = false; _showVehiclePicker = false; _showCharging = false;
       });
-      await _c.loadRequest(Uri.parse(startUrl));
+      await _c.loadRequest(Uri.parse(vehicleUrl));
       if (switchAccount && mounted) {
         Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const Gate()), (_) => false);
       }
     } catch (_) {}
   }
 
-  /// ---------- Fahrzeuge aus #vehicleSelection holen (robust) ----------
-  Future<List<VehicleItem>> _scanVehicles() async {
+  // ---------- Helfer: auf VehicleAppointments wechseln & warten ----------
+  Future<void> _ensureOnVehiclePage() async {
+    if (!_lastUrl.contains('VehicleAppointments')) {
+      await _c.loadRequest(Uri.parse(vehicleUrl));
+      // warte, bis wir wirklich dort sind
+      for (int i = 0; i < 60; i++) {
+        await Future.delayed(const Duration(milliseconds: 200));
+        if (_lastUrl.contains('VehicleAppointments')) break;
+      }
+    }
+  }
+
+  /// ---------- Fahrzeuge aus #vehicleSelection holen (robust + Polling) ----------
+  Future<List<VehicleItem>> _scanVehiclesOnce() async {
     final js = r'''
       (function(){
         function clean(t){return (t||'').toString().replace(/\s+/g,' ').trim();}
@@ -332,7 +345,7 @@ class _WebShellState extends State<WebShell> {
         var out = [];
         if(!root){ return JSON.stringify({ok:false, reason:'no_element', list:[]}); }
 
-        // 1) DevExtreme-API (beachtet displayExpr / dataSource.items())
+        // DevExtreme-API (beachtet displayExpr / dataSource.items())
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst = jQuery(root).dxSelectBox('instance');
@@ -368,7 +381,7 @@ class _WebShellState extends State<WebShell> {
           }
         }catch(e){}
 
-        // 2) Fallback: Popup öffnen und Texte aus DOM holen
+        // Popup öffnen (lädt oft erst dann)
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst2 = jQuery(root).dxSelectBox('instance');
@@ -399,6 +412,27 @@ class _WebShellState extends State<WebShell> {
     }
   }
 
+  Future<List<VehicleItem>> _scanVehiclesWithPolling() async {
+    // Stelle sicher, dass wir auf der Fahrzeug-Seite sind
+    await _ensureOnVehiclePage();
+
+    // Bis zu 4 Sekunden pollen (20 * 200ms)
+    for (int i = 0; i < 20; i++) {
+      final list = await _scanVehiclesOnce();
+      if (list.isNotEmpty) return list;
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+
+    // Letzter Versuch: Seite neu laden und nochmals kurz pollen
+    await _c.reload();
+    for (int i = 0; i < 20; i++) {
+      final list = await _scanVehiclesOnce();
+      if (list.isNotEmpty) return list;
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+    return [];
+  }
+
   /// Auswahl in #vehicleSelection setzen – erst API (selectedItem), dann DOM-Klick (Index)
   Future<String> _selectVehicle(VehicleItem v) async {
     final js = '''
@@ -407,7 +441,6 @@ class _WebShellState extends State<WebShell> {
         var root = document.getElementById('vehicleSelection');
         if(!root) return 'no_element';
 
-        // 1) DevExtreme-API per selectedItem / valueExpr
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst = jQuery(root).dxSelectBox('instance');
@@ -436,7 +469,7 @@ class _WebShellState extends State<WebShell> {
           }
         }catch(e){}
 
-        // 2) Fallback: Popup öffnen und gewünschten Listeneintrag klicken
+        // Fallback: DOM klicken
         try{
           var inst2 = (window.jQuery && jQuery.fn.dxSelectBox) ? jQuery(root).dxSelectBox('instance') : null;
           try{ inst2 && inst2.option('opened', true); }catch(e){}
@@ -446,7 +479,6 @@ class _WebShellState extends State<WebShell> {
             return 'clicked_dom';
           }
         }catch(e){}
-
         return 'failed';
       })();
     ''';
@@ -465,6 +497,16 @@ class _WebShellState extends State<WebShell> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Soleco'),
+        leading: IconButton( // Startmenü jederzeit öffnen
+          tooltip: 'Start',
+          icon: const Icon(Icons.apps),
+          onPressed: () => setState(() {
+            _autoShowHub = false;
+            _showHub = true;
+            _showVehiclePicker = false;
+            _showCharging = false;
+          }),
+        ),
         actions: [
           IconButton(onPressed: _reload, icon: const Icon(Icons.refresh)),
           PopupMenuButton<String>(
@@ -510,18 +552,23 @@ class _WebShellState extends State<WebShell> {
           ),
           if (_loading) const LinearProgressIndicator(minHeight: 2),
 
-          // HUB: Webseite oder Auto
+          // HUB: Webseite oder Auto (nur 1x automatisch; sonst per Apps-Icon)
           if (_showHub)
             HubOverlay(
-              onWebsite: () {
+              onWebsite: () async {
                 setState(() {
+                  _autoShowHub = false;
                   _showHub = false;
                   _showVehiclePicker = false;
                   _showCharging = false;
                 });
+                await _c.loadRequest(Uri.parse(viewsUrl)); // << /Views
               },
               onAuto: () async {
-                final list = await _scanVehicles();
+                setState(() {
+                  _autoShowHub = false;
+                });
+                final list = await _scanVehiclesWithPolling(); // auto öffnen / warten
                 if (list.length == 1) {
                   await _selectVehicle(list.first);
                   await Future.delayed(const Duration(milliseconds: 250));
@@ -542,7 +589,7 @@ class _WebShellState extends State<WebShell> {
               vehicles: _vehicles,
               onCancel: () => setState(() { _showVehiclePicker = false; _showHub = true; }),
               onRescan: () async {
-                final list = await _scanVehicles();
+                final list = await _scanVehiclesWithPolling();
                 setState(() => _vehicles = list);
               },
               onSelect: (v) async {
@@ -875,4 +922,10 @@ class _CustomChargingPanelState extends State<CustomChargingPanel> {
       ),
     );
   }
+}
+
+class VehicleItem {
+  final String label; // z. B. "Audi Q6"
+  final int index;    // Position in der dxSelectBox
+  VehicleItem({required this.label, required this.index});
 }

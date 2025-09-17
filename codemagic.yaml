@@ -14,44 +14,38 @@ workflows:
           # sicherstellen, dass ios/ vorhanden ist
           flutter create . --platforms=ios
 
-      - name: Build archive with Flutter (no codesign) – tolerate nonzero exit
+      - name: CocoaPods aktualisieren
         script: |
-          set +e
+          cd ios
+          # iOS-Minimum auf 13.0 anheben (falls noch nicht gesetzt)
+          sed -i.bak -e "s/platform :ios, '.*'/platform :ios, '13.0'/" Podfile || true
+          pod repo update
+          pod install
+          cd ..
+
+      - name: Build iOS DEBUG (ohne Codesign)
+        script: |
+          set -euxo pipefail
           flutter clean
-          flutter build ipa --release --no-codesign
-          EXIT_CODE=$?
-          echo "flutter build ipa exit code: $EXIT_CODE"
-          echo "Archive tree:"
-          ls -R build/ios/archive || true
+          # Debug-Build erzeugt eine .app für echte Geräte ohne Signierung
+          flutter build ios --debug --no-codesign
+          echo "Inhalt von build/ios/iphoneos:"
+          ls -la build/ios/iphoneos || true
 
-          # Prüfen, ob das Archiv existiert – wenn ja, trotzdem OK weiterbauen
-          APP_DIR="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
-          if [ ! -d "$APP_DIR" ]; then
-            echo "Runner.app nicht gefunden. Versuche Fallback-Suche..."
-            find build -type d -name "Runner.app" -print
-            # Wenn weiterhin nichts da: jetzt wirklich fehlschlagen
-            if ! find build -type d -name "Runner.app" | grep -q . ; then
-              echo "Kein Runner.app im Build gefunden. Abbruch."
-              exit 1
-            fi
-          fi
-          # Exit NICHT hart fehlschlagen, selbst wenn EXIT_CODE != 0
-          exit 0
-
-      - name: Package unsigned IPA from .xcarchive (or found Runner.app)
+      - name: Package unsigned IPA
         script: |
-          set -e
-          APP_PATH="build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app"
+          set -euxo pipefail
+          APP_PATH="build/ios/iphoneos/Runner.app"
           if [ ! -d "$APP_PATH" ]; then
-            # Fallback: nimm das erste gefundene Runner.app irgendwo im Build
-            APP_PATH="$(find build -type d -name "Runner.app" | head -n 1)"
+            # Fallback: suche Runner.app irgendwo im Build
+            APP_PATH="$(find build -type d -name 'Runner.app' | head -n 1)"
           fi
-          echo "Using app at: $APP_PATH"
+          echo "Verwende App unter: $APP_PATH"
           mkdir -p out/Payload
           cp -R "$APP_PATH" out/Payload/
           (cd out && zip -r SolecoWrapper-unsigned.ipa Payload)
           rm -rf out/Payload
-          echo "Final artifacts in out/:"
+          echo "Finale Artefakte in out/:"
           ls -la out
 
     artifacts:

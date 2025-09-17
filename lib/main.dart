@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io'; // <- wichtig für Cookie
+import 'dart:io'; // für Cookie
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -15,7 +15,7 @@ class App extends StatelessWidget {
     return MaterialApp(
       title: 'Soleco',
       theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.blue),
-      home: const WebShell(), // Gate weglassen? Nein – wir behalten Gate in der AppBar-Aktion
+      home: const WebShell(), // Gate bleibt erreichbar über „Konto wechseln“
     );
   }
 }
@@ -290,6 +290,37 @@ class _WebShellState extends State<WebShell> {
 
   Future<void> _reload() => _c.reload();
 
+  /// ---------- Logout (mit/ohne Kontowechsel) ----------
+  Future<void> _logout({bool switchAccount = false}) async {
+    try {
+      await cookieMgr.clearCookies();      // alle Cookies
+      await _c.clearCache();               // Cache
+      try {
+        await _c.runJavaScript('try{localStorage.clear();sessionStorage.clear();}catch(e){}');
+      } catch (_) {}
+      await storage.delete(key: _cookieStoreKey); // unser Cookie-Archiv
+
+      if (switchAccount) {
+        await storage.delete(key: 'soleco_user');
+        await storage.delete(key: 'soleco_pass');
+      }
+
+      setState(() {
+        _didAutoLogin = false;
+        _showCustomUI = false;
+      });
+
+      await _c.loadRequest(Uri.parse(startUrl));
+
+      if (switchAccount && mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const Gate()),
+          (_) => false,
+        );
+      }
+    } catch (_) {}
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -297,20 +328,45 @@ class _WebShellState extends State<WebShell> {
         title: const Text('Soleco'),
         actions: [
           IconButton(onPressed: _reload, icon: const Icon(Icons.refresh)),
-          IconButton(
-            tooltip: 'Login ändern',
-            icon: const Icon(Icons.manage_accounts),
-            onPressed: () {
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const Gate()));
+          PopupMenuButton<String>(
+            onSelected: (value) async {
+              if (value == 'logout') {
+                await _logout(switchAccount: false); // nur abmelden
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Abgemeldet.')),
+                  );
+                }
+              } else if (value == 'switch') {
+                await _logout(switchAccount: true); // Konto wechseln
+              }
             },
-          )
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: 'logout',
+                child: ListTile(
+                  leading: Icon(Icons.logout),
+                  title: Text('Abmelden'),
+                  subtitle: Text('Cookies löschen, gleiches Konto'),
+                ),
+              ),
+              PopupMenuItem(
+                value: 'switch',
+                child: ListTile(
+                  leading: Icon(Icons.switch_account),
+                  title: Text('Abmelden & Konto wechseln'),
+                  subtitle: Text('Cookies + Zugangsdaten löschen'),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
       body: Stack(
         children: [
           // WebView bleibt IMMER gemountet, wird nur unsichtbar geschaltet
           Offstage(
-            offstage: _showCustomUI, // verstecken, aber nicht entsorgen
+            offstage: _showCustomUI,
             child: WebViewWidget(controller: _c),
           ),
           if (_loading) const LinearProgressIndicator(minHeight: 2),
@@ -321,6 +377,8 @@ class _WebShellState extends State<WebShell> {
             child: CustomChargingPanel(
               runJS: (code) => _c.runJavaScript(code),
               onBackToWeb: () => setState(() => _showCustomUI = false),
+              onLogout: () => _logout(switchAccount: false),
+              onSwitchAccount: () => _logout(switchAccount: true),
             ),
           ),
         ],
@@ -333,7 +391,16 @@ class _WebShellState extends State<WebShell> {
 class CustomChargingPanel extends StatefulWidget {
   final Future<void> Function(String js) runJS;
   final VoidCallback onBackToWeb;
-  const CustomChargingPanel({super.key, required this.runJS, required this.onBackToWeb});
+  final Future<void> Function() onLogout;
+  final Future<void> Function() onSwitchAccount;
+
+  const CustomChargingPanel({
+    super.key,
+    required this.runJS,
+    required this.onBackToWeb,
+    required this.onLogout,
+    required this.onSwitchAccount,
+  });
 
   @override
   State<CustomChargingPanel> createState() => _CustomChargingPanelState();
@@ -402,21 +469,21 @@ class _CustomChargingPanelState extends State<CustomChargingPanel> {
           }
         } catch(e){}
 
-        // 3) Versuche gezielt den DevExtreme-Handler aufzurufen
+        // 3) DevExtreme-Button gezielt triggern (Handler)
         try {
           if (window.jQuery) {
             var inst = jQuery("#PostParametersButton").dxButton("instance");
             if (inst) {
               var handler = inst.option("onClick");
               if (typeof handler === "function") {
-                handler({}); // ruft denselben Code wie Button
+                handler({});
                 return "handler_called";
               }
             }
           }
-        } catch(e){ console.log("dxButton handler call failed", e); }
+        } catch(e){}
 
-        // 4) DevExtreme-Button "anklicken"
+        // 4) Letzter Fallback: dxclick + Pointer-Events + click()
         var btn = document.querySelector("#PostParametersButton");
         if (btn) {
           try { if (window.jQuery) jQuery(btn).trigger('dxclick'); } catch(e){}
@@ -459,6 +526,27 @@ class _CustomChargingPanelState extends State<CustomChargingPanel> {
                     onPressed: widget.onBackToWeb,
                     icon: const Icon(Icons.public),
                     label: const Text('Zur Webseite'),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      await widget.onLogout();
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Abgemeldet.')),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.logout),
+                    label: const Text('Abmelden'),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      await widget.onSwitchAccount();
+                    },
+                    icon: const Icon(Icons.switch_account),
+                    label: const Text('Konto wechseln'),
                   ),
                 ],
               ),

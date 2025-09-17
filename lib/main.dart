@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -148,7 +147,7 @@ class _WebShellState extends State<WebShell> {
           onPageFinished: (url) async {
             setState(() => _loading = false);
 
-            // 1) Wenn wir auf der B2C-Loginseite stehen -> Auto-Login (einmalig)
+            // 1) B2C-Loginseite? -> Auto-Login (einmalig)
             if (await _isB2CLoginDom()) {
               if (!_didAutoLogin) {
                 _didAutoLogin = true;
@@ -156,14 +155,14 @@ class _WebShellState extends State<WebShell> {
               }
             }
 
-            // 2) Wenn wir eingeloggt sind -> Custom UI
+            // 2) Eingeloggt? -> Cookies sichern + Custom UI
             if (url.contains('VehicleAppointments')) {
               await _persistCookies(url); // Cookies sichern (soleco-Domain)
               if (mounted) setState(() => _showCustomUI = true);
               return;
             }
 
-            // 3) Auf jeder Seite Cookies einsammeln (auch B2C-Domain)
+            // 3) Generell Cookies einsammeln (auch B2C-Domain)
             await _persistCookies(url);
           },
           onNavigationRequest: (req) {
@@ -193,7 +192,6 @@ class _WebShellState extends State<WebShell> {
     for (final entry in map.entries) {
       final domain = entry.key;
       final list = (entry.value as List).cast<Map>();
-      // Setze Cookies für diese Domain
       for (final m in list) {
         try {
           final c = Cookie(m['name'] as String, m['value'] as String)
@@ -209,15 +207,12 @@ class _WebShellState extends State<WebShell> {
   Future<void> _persistCookies(String currentUrl) async {
     try {
       final uri = Uri.parse(currentUrl);
-      // Cookies für aktuelle URL holen
       final cookies = await cookieMgr.getCookies(currentUrl);
-      // Bisherige Struktur laden
       final raw = await storage.read(key: _cookieStoreKey);
       final Map<String, List<Map<String, dynamic>>> store =
           raw == null ? {} : (jsonDecode(raw) as Map)
               .map((k, v) => MapEntry(k as String, (v as List).cast<Map>().cast<Map<String, dynamic>>()));
 
-      // Merge pro Domain
       for (final c in cookies) {
         final domain = c.domain ?? uri.host;
         store.putIfAbsent(domain, () => []);
@@ -229,11 +224,7 @@ class _WebShellState extends State<WebShell> {
           'path': c.path ?? '/',
           'secure': c.secure ?? true,
         };
-        if (idx >= 0) {
-          list[idx] = m;
-        } else {
-          list.add(m);
-        }
+        if (idx >= 0) list[idx] = m; else list.add(m);
       }
       await storage.write(key: _cookieStoreKey, value: jsonEncode(store));
     } catch (_) {}
@@ -354,6 +345,7 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
   final TextEditingController _minutesCtrl = TextEditingController(text: '30');
   bool _busy = false;
 
+  // >>> NEU: robuster Trigger für "Parameter aktivieren"
   Future<void> _startCharging() async {
     final minutes = _minutesCtrl.text.trim();
     if (minutes.isEmpty) return;
@@ -361,22 +353,47 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
 
     final js = '''
       (function(){
+        function toNum(x){var n=parseFloat(x); return isNaN(n)?0:n;}
+        var m = toNum("$minutes");
+
+        // 1) Direkt PostParameters(...) aufrufen – mit echten Formularwerten
         try {
-          var m = parseInt("$minutes",10); if(isNaN(m)||m<0) m=0;
+          if (window.DevExpress && window.jQuery) {
+            var form = jQuery("#parameterform").dxForm("instance");
+            if (form) {
+              var eMin = form.getEditor("Minutes");
+              var eCR  = form.getEditor("CurrentRange");
 
-          // DevExtreme-Form (falls vorhanden)
-          try {
-            if (window.DevExpress && window.jQuery) {
-              var form = jQuery("#parameterform").dxForm("instance");
-              if (form && form.updateData) { form.updateData("Minutes", m); }
+              if (eMin) { try { eMin.option("value", m); } catch(e){} }
+              try { form.updateData("Minutes", m); } catch(e){}
+
+              var valMin = eMin ? toNum(eMin.option("value")) :
+                           (toNum((document.querySelector("input[name='Minutes']")||{}).value) || m);
+              var minMin = eMin && eMin.option("min")!=null ? toNum(eMin.option("min")) : 0.0;
+              var maxMin = eMin && eMin.option("max")!=null ? toNum(eMin.option("max")) : 600.0;
+
+              var valCR  = eCR  ? toNum(eCR.option("value")) :
+                           toNum((document.querySelector("input[name='CurrentRange']")||{}).value);
+              var minCR  = eCR && eCR.option("min")!=null ? toNum(eCR.option("min")) : 0.0;
+              var maxCR  = eCR && eCR.option("max")!=null ? toNum(eCR.option("max")) : 10000.0;
+
+              if (typeof PostParameters === 'function') {
+                PostParameters({
+                  "ManualControls":[{"SetPoints":[
+                    {"Min":minCR,"Max":maxCR,"Value":valCR,"Format":"#0.0","Label":null,"ControlLabel":"Aktuelle Reichweite [km]","ReadOnly":true,"IsRequired":true,"Type":"RangeSetPoint","Id":"CurrentRange"},
+                    {"Min":minMin,"Max":maxMin,"Value":valMin,"Format":"#0.0","Label":null,"ControlLabel":"Sofortladung mit voller Leistung für [minutes]","ReadOnly":false,"IsRequired":false,"Type":"RangeSetPoint","Id":"Minutes"}
+                  ],"Label":null,"Id":"EV1"}]
+                });
+                return "called_PostParameters";
+              }
             }
-          } catch(e){}
+          }
+        } catch(e){ console.log("direct PostParameters failed", e); }
 
-          // Hidden input
+        // 2) Fallback: Inputs sicher setzen
+        try {
           var hidden = document.querySelector("input[name='Minutes']");
           if (hidden) hidden.value = m;
-
-          // Sichtbares DX-Input (Fallback)
           var vis = document.querySelector("input#Minutes, input.dx-texteditor-input");
           if (vis) {
             vis.value = m;
@@ -386,11 +403,19 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
               var ev=document.createEvent('HTMLEvents'); ev.initEvent('keyup',true,false); vis.dispatchEvent(ev);
             } catch(e){}
           }
+        } catch(e){}
 
-          // Klick auf „Parameter aktivieren“
-          var btn = document.querySelector("#PostParametersButton, .dx-button[id='PostParametersButton']");
-          if (btn) btn.click();
-        } catch(e){ console.log("start charge error", e); }
+        // 3) DevExtreme-Button "anklicken"
+        var btn = document.querySelector("#PostParametersButton");
+        if (btn) {
+          try { if (window.jQuery) jQuery(btn).trigger('dxclick'); } catch(e){}
+          try { btn.dispatchEvent(new MouseEvent('pointerdown',{bubbles:true})); } catch(e){}
+          try { btn.dispatchEvent(new MouseEvent('pointerup',{bubbles:true})); } catch(e){}
+          try { btn.click(); } catch(e){}
+          return "clicked_btn";
+        }
+
+        return "no_button_found";
       })();
     ''';
 
@@ -398,7 +423,7 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
       await widget.controller.runJavaScript(js);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Sofortladung für $minutes Minuten ausgelöst')),
+          const SnackBar(content: Text('Sofortladung ausgelöst')),
         );
       }
     } finally {

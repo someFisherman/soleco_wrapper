@@ -7,45 +7,46 @@ workflows:
       xcode: latest
 
     scripts:
-      - name: Prepare Flutter
+      - name: Prepare Flutter & CocoaPods
         script: |
+          set -euxo pipefail
           flutter --version
           flutter pub get
-          # sicherstellen, dass ios/ vorhanden ist
+          # iOS-Gerüst sicherstellen
           flutter create . --platforms=ios
-
-      - name: CocoaPods aktualisieren
-        script: |
+          # CocoaPods vorbereiten (iOS 13+)
           cd ios
-          # iOS-Minimum auf 13.0 anheben (falls noch nicht gesetzt)
           sed -i.bak -e "s/platform :ios, '.*'/platform :ios, '13.0'/" Podfile || true
           pod repo update
           pod install
           cd ..
 
-      - name: Build iOS DEBUG (ohne Codesign)
+      - name: Build iOS (try Release, else Debug) ohne Codesign
         script: |
           set -euxo pipefail
           flutter clean
-          # Debug-Build erzeugt eine .app für echte Geräte ohne Signierung
-          flutter build ios --debug --no-codesign
-          echo "Inhalt von build/ios/iphoneos:"
-          ls -la build/ios/iphoneos || true
+          # Versuch 1: Release ohne Codesign
+          if ! flutter build ios --release --no-codesign; then
+            echo "Release-Build ohne Codesign fehlgeschlagen – versuche Debug…"
+            flutter clean
+            flutter build ios --debug --no-codesign
+          fi
+          echo "Suche nach Runner.app…"
+          find build -type d -name "Runner.app" -print || true
 
       - name: Package unsigned IPA
         script: |
           set -euxo pipefail
-          APP_PATH="build/ios/iphoneos/Runner.app"
-          if [ ! -d "$APP_PATH" ]; then
-            # Fallback: suche Runner.app irgendwo im Build
-            APP_PATH="$(find build -type d -name 'Runner.app' | head -n 1)"
+          APP_PATH="$(find build -type d -name 'Runner.app' | head -n 1)"
+          if [ -z "$APP_PATH" ]; then
+            echo "Runner.app nicht gefunden. Abbruch."
+            exit 1
           fi
-          echo "Verwende App unter: $APP_PATH"
           mkdir -p out/Payload
           cp -R "$APP_PATH" out/Payload/
           (cd out && zip -r SolecoWrapper-unsigned.ipa Payload)
           rm -rf out/Payload
-          echo "Finale Artefakte in out/:"
+          echo "Fertige Artefakte:"
           ls -la out
 
     artifacts:

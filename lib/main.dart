@@ -6,9 +6,6 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 void main() => runApp(const App());
 
-/// =============================================
-/// App
-/// =============================================
 class App extends StatelessWidget {
   const App({super.key});
   @override
@@ -21,10 +18,10 @@ class App extends StatelessWidget {
   }
 }
 
-/// =============================================
-/// Gate: zeigt entweder Credential-Setup (einmalig)
-/// oder direkt die WebShell
-/// =============================================
+/// ----------------------------------------------------
+/// Gate: fragt einmalig Zugangsdaten ab, speichert sie,
+/// startet dann die WebShell
+/// ----------------------------------------------------
 class Gate extends StatefulWidget {
   const Gate({super.key});
   @override
@@ -38,10 +35,10 @@ class _GateState extends State<Gate> {
   @override
   void initState() {
     super.initState();
-    _checkCreds();
+    _check();
   }
 
-  Future<void> _checkCreds() async {
+  Future<void> _check() async {
     final u = await storage.read(key: 'soleco_user');
     final p = await storage.read(key: 'soleco_pass');
     setState(() => hasCreds = (u?.isNotEmpty == true && p?.isNotEmpty == true));
@@ -52,16 +49,11 @@ class _GateState extends State<Gate> {
     if (hasCreds == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    if (hasCreds == true) {
-      return const WebShell();
-    }
+    if (hasCreds == true) return const WebShell();
     return CredsScreen(onSaved: () => setState(() => hasCreds = true));
   }
 }
 
-/// =============================================
-/// CredsScreen: Einmal Benutzername/Passwort speichern
-/// =============================================
 class CredsScreen extends StatefulWidget {
   final VoidCallback onSaved;
   const CredsScreen({super.key, required this.onSaved});
@@ -71,13 +63,13 @@ class CredsScreen extends StatefulWidget {
 
 class _CredsScreenState extends State<CredsScreen> {
   final storage = const FlutterSecureStorage();
-  final _formKey = GlobalKey<FormState>();
+  final _form = GlobalKey<FormState>();
   final _user = TextEditingController();
   final _pass = TextEditingController();
   bool _busy = false;
 
   Future<void> _save() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (!_form.currentState!.validate()) return;
     setState(() => _busy = true);
     await storage.write(key: 'soleco_user', value: _user.text.trim());
     await storage.write(key: 'soleco_pass', value: _pass.text);
@@ -87,43 +79,34 @@ class _CredsScreenState extends State<CredsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final pad = MediaQuery.of(context).size.width > 500 ? 32.0 : 16.0;
     return Scaffold(
       appBar: AppBar(title: const Text('Soleco Login speichern')),
       body: Padding(
-        padding: EdgeInsets.all(pad),
+        padding: const EdgeInsets.all(16),
         child: Form(
-          key: _formKey,
+          key: _form,
           child: Column(
             children: [
-              const Text('Bitte einmalig deine Soleco-Zugangsdaten eingeben. '
-                  'Die App loggt dich danach automatisch ein.',
-                  style: TextStyle(fontSize: 14)),
-              const SizedBox(height: 16),
+              const Text('Einmalig Benutzername & Passwort speichern – die App loggt dich dann automatisch ein.'),
+              const SizedBox(height: 12),
               TextFormField(
                 controller: _user,
-                decoration: const InputDecoration(
-                  labelText: 'Benutzername / E-Mail',
-                  border: OutlineInputBorder(),
-                ),
-                validator: (v) => (v == null || v.trim().isEmpty) ? 'Benutzername erforderlich' : null,
+                decoration: const InputDecoration(labelText: 'Benutzername', border: OutlineInputBorder()),
+                validator: (v) => (v==null||v.trim().isEmpty) ? 'Benutzername erforderlich' : null,
               ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _pass,
-                decoration: const InputDecoration(
-                  labelText: 'Passwort',
-                  border: OutlineInputBorder(),
-                ),
                 obscureText: true,
-                validator: (v) => (v == null || v.isEmpty) ? 'Passwort erforderlich' : null,
+                decoration: const InputDecoration(labelText: 'Passwort', border: OutlineInputBorder()),
+                validator: (v) => (v==null||v.isEmpty) ? 'Passwort erforderlich' : null,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               FilledButton.icon(
                 onPressed: _busy ? null : _save,
                 icon: const Icon(Icons.save),
                 label: Text(_busy ? 'Speichere…' : 'Speichern'),
-              ),
+              )
             ],
           ),
         ),
@@ -132,10 +115,11 @@ class _CredsScreenState extends State<CredsScreen> {
   }
 }
 
-/// =============================================
-/// WebShell: Lädt Seite, Auto-Login bei Bedarf,
-/// zeigt nach Login deine „Sofortladen“-UI.
-/// =============================================
+/// ----------------------------------------------------
+/// WebShell: lädt VehicleAppointments, macht bei Bedarf
+/// **gezielten Azure B2C Auto-Login** und zeigt danach
+/// deinen „Sofortladen“-Screen.
+/// ----------------------------------------------------
 class WebShell extends StatefulWidget {
   const WebShell({super.key});
   @override
@@ -143,12 +127,14 @@ class WebShell extends StatefulWidget {
 }
 
 class _WebShellState extends State<WebShell> {
+  // Direkt die Zielseite: wenn nicht eingeloggt, leitet Soleco zu B2C um
   static const String startUrl = 'https://soleco-optimizer.ch/VehicleAppointments';
+
   final storage = const FlutterSecureStorage();
   late final WebViewController _c;
-
   bool _loading = true;
   bool _showCustomUI = false;
+  bool _didAutoLogin = false; // wichtig: nur EIN Versuch pro Login-Seite
 
   @override
   void initState() {
@@ -159,20 +145,25 @@ class _WebShellState extends State<WebShell> {
       ..setBackgroundColor(const Color(0x00000000))
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageStarted: (u) => setState(() => _loading = true),
-          onPageFinished: (u) async {
+          onPageStarted: (_) => setState(() => _loading = true),
+          onPageFinished: (url) async {
             setState(() => _loading = false);
 
-            // 1) Wenn Login-Seite erkannt -> Auto-Login versuchen
-            if (_looksLikeLoginUrl(u)) {
-              await _tryAutoLogin();
+            // 1) Bereits eingeloggt? Dann kommt VehicleAppointments -> zeige Custom UI
+            if (url.contains('VehicleAppointments')) {
+              if (mounted) setState(() => _showCustomUI = true);
               return;
             }
 
-            // 2) Wenn Zielseite nach Login -> Custom UI zeigen
-            if (u.contains('VehicleAppointments')) {
-              if (mounted) setState(() => _showCustomUI = true);
+            // 2) Stehen wir auf der B2C-Loginseite? (DOM-Check!)
+            final isB2C = await _isB2CLoginDom();
+            if (isB2C && !_didAutoLogin) {
+              _didAutoLogin = true; // nur einmal pro Besuch
+              await _autoLoginB2C();
+              return;
             }
+
+            // 3) Falls wir nach Login wieder irgendwo anders landen, einfach laufen lassen.
           },
           onNavigationRequest: (req) {
             final u = req.url;
@@ -187,55 +178,69 @@ class _WebShellState extends State<WebShell> {
       ..loadRequest(Uri.parse(startUrl));
   }
 
-  bool _looksLikeLoginUrl(String url) {
-    final u = url.toLowerCase();
-    // sehr großzügig: alles was "login" oder "signin" enthält
-    return u.contains('login') || u.contains('signin') || u.contains('account/login');
+  Future<bool> _isB2CLoginDom() async {
+    // Prüfe, ob das B2C-Login-Formular im DOM ist (IDs aus deinem HTML: #localAccountForm, #UserId, #password, #next)
+    try {
+      final res = await _c.runJavaScriptReturningResult('''
+        (function(){
+          var f=document.getElementById('localAccountForm');
+          var u=document.getElementById('UserId');
+          var p=document.getElementById('password');
+          var n=document.getElementById('next');
+          return !!(f && u && p && n);
+        })();
+      ''');
+      // iOS gibt als bool manchmal 0/1 oder true/false zurück
+      return res.toString() == 'true' || res.toString() == '1';
+    } catch (_) {
+      return false;
+    }
   }
 
-  Future<void> _tryAutoLogin() async {
+  Future<void> _autoLoginB2C() async {
     final user = await storage.read(key: 'soleco_user');
     final pass = await storage.read(key: 'soleco_pass');
     if (user == null || pass == null) return;
 
-    // Dieses JS sucht übliche Login-Felder (email/username + password),
-    // füllt sie und submit-t das erste Formular.
+    // Polling bis Elemente sicher da sind, dann befüllen & klicken (IDs exakt aus deinem HTML)
     final js = '''
       (function(){
-        try {
-          function setInput(el, val){
-            if(!el) return false;
-            el.focus();
-            el.value = val;
-            try {
-              el.dispatchEvent(new Event('input', {bubbles:true}));
-              el.dispatchEvent(new Event('change', {bubbles:true}));
-              var ev = document.createEvent('HTMLEvents'); ev.initEvent('keyup', true, false); el.dispatchEvent(ev);
-            } catch(e){}
+        function setVal(el, val){
+          if(!el) return false;
+          el.focus();
+          el.value = val;
+          try{
+            el.dispatchEvent(new Event('input',{bubbles:true}));
+            el.dispatchEvent(new Event('change',{bubbles:true}));
+            var ev=document.createEvent('HTMLEvents'); ev.initEvent('keyup',true,false); el.dispatchEvent(ev);
+          }catch(e){}
+          return true;
+        }
+        function tryLogin(){
+          var u=document.getElementById('UserId');
+          var p=document.getElementById('password');
+          var btn=document.getElementById('next');
+          if(u && p && btn){
+            setVal(u, '${_js(user)}');
+            setVal(p, '${_js(pass)}');
+            btn.click();
             return true;
           }
-
-          var u = document.querySelector("input[type='email'], input[name*='user'], input[name*='email'], input[id*='user'], input[id*='email']");
-          var p = document.querySelector("input[type='password'], input[name*='pass'], input[id*='pass']");
-
-          var okU = setInput(u, "${_jsEscape(user)}");
-          var okP = setInput(p, "${_jsEscape(pass)}");
-
-          // versuche sichtbaren Login-Button
-          var btn = document.querySelector("button[type='submit'], input[type='submit'], button[class*='login'], button[id*='login']");
-          if(btn){ btn.click(); return; }
-
-          // sonst Formular submitten
-          var form = (u && u.form) || (p && p.form) || document.querySelector("form");
-          if(form){ form.submit(); }
-        } catch(e){ console.log('autologin error', e); }
+          return false;
+        }
+        if(!tryLogin()){
+          var tries=0;
+          var t=setInterval(function(){
+            tries++;
+            if(tryLogin() || tries>50){ clearInterval(t); }
+          }, 100);
+        }
       })();
     ''';
-
     await _c.runJavaScript(js);
   }
 
-  String _jsEscape(String s) => s.replaceAll(r'\', r'\\').replaceAll("'", r"\'").replaceAll('`', r'\`');
+  String _js(String s) => s.replaceAll(r'\', r'\\').replaceAll("'", r"\'").replaceAll('`', r'\`');
 
   Future<void> _reload() => _c.reload();
 
@@ -247,7 +252,6 @@ class _WebShellState extends State<WebShell> {
         onBackToWeb: () => setState(() => _showCustomUI = false),
       );
     }
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Soleco'),
@@ -257,13 +261,12 @@ class _WebShellState extends State<WebShell> {
             tooltip: 'Login ändern',
             icon: const Icon(Icons.manage_accounts),
             onPressed: () async {
-              // Zugangsdaten löschen und zurück zum Gate
               await storage.delete(key: 'soleco_user');
               await storage.delete(key: 'soleco_pass');
               if (!mounted) return;
               Navigator.of(context).pushAndRemoveUntil(
                 MaterialPageRoute(builder: (_) => const Gate()),
-                (route) => false,
+                (_) => false,
               );
             },
           )
@@ -279,9 +282,9 @@ class _WebShellState extends State<WebShell> {
   }
 }
 
-/// =============================================
-/// Deine „Sofortladen“-Seite (wie zuvor)
-/// =============================================
+/// ----------------------------------------------------
+/// Dein einfacher „Sofortladen“-Screen
+/// ----------------------------------------------------
 class CustomChargingScreen extends StatefulWidget {
   final WebViewController controller;
   final VoidCallback onBackToWeb;
@@ -305,7 +308,7 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
         try {
           var m = parseInt("$minutes",10); if(isNaN(m)||m<0) m=0;
 
-          // DevExtreme-Form
+          // DevExtreme-Form (falls vorhanden)
           try {
             if (window.DevExpress && window.jQuery) {
               var form = jQuery("#parameterform").dxForm("instance");
@@ -313,11 +316,11 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
             }
           } catch(e){}
 
-          // Hidden input
+          // Hidden input (immer vorhanden laut HTML)
           var hidden = document.querySelector("input[name='Minutes']");
           if (hidden) hidden.value = m;
 
-          // sichtbares Feld (Fallback)
+          // Sichtbares DX-Input als Fallback
           var vis = document.querySelector("input#Minutes, input.dx-texteditor-input");
           if (vis) {
             vis.value = m;
@@ -328,8 +331,8 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
             } catch(e){}
           }
 
-          // Button
-          var btn = document.querySelector("#PostParametersButton, .dx-button");
+          // Klick auf „Parameter aktivieren“
+          var btn = document.querySelector("#PostParametersButton, .dx-button[id='PostParametersButton']");
           if (btn) btn.click();
         } catch(e){ console.log("start charge error", e); }
       })();
@@ -349,7 +352,6 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final pad = MediaQuery.of(context).size.width > 500 ? 24.0 : 16.0;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Soleco – Schnellstart'),
@@ -362,7 +364,7 @@ class _CustomChargingScreenState extends State<CustomChargingScreen> {
         ],
       ),
       body: Padding(
-        padding: EdgeInsets.all(pad),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [

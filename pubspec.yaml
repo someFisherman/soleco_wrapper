@@ -1,5 +1,5 @@
 name: soleco_wrapper
-description: Simple iOS WebView wrapper for soleco-optimizer.ch
+description: iOS WebView Wrapper mit 'Sofortladen starten'-Button
 publish_to: 'none'
 version: 1.0.0+1
 

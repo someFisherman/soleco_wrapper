@@ -6,10 +6,10 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:webview_cookie_manager/webview_cookie_manager.dart';
 
-/// --- Datentyp für die Fahrzeugliste (bewusst ganz oben, damit überall bekannt) ---
+/// --- Fahrzeug-Datentyp (ganz oben, überall sichtbar) ---
 class VehicleItem {
-  final String label; // z. B. "Audi Q6"
-  final int index;    // Position in der dxSelectBox
+  final String label;
+  final int index;
   VehicleItem({required this.label, required this.index});
 }
 
@@ -39,10 +39,7 @@ class _GateState extends State<Gate> {
   bool? hasCreds;
 
   @override
-  void initState() {
-    super.initState();
-    _check();
-  }
+  void initState() { super.initState(); _check(); }
 
   Future<void> _check() async {
     final u = await storage.read(key: 'soleco_user');
@@ -52,9 +49,7 @@ class _GateState extends State<Gate> {
 
   @override
   Widget build(BuildContext context) {
-    if (hasCreds == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+    if (hasCreds == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
     if (hasCreds == true) return const WebShell();
     return CredsScreen(onSaved: () => setState(() => hasCreds = true));
   }
@@ -139,12 +134,12 @@ class _WebShellState extends State<WebShell> {
   bool _loading = true;
 
   // Overlays
-  bool _showHub = false;            // Auswahl: Webseite / Auto
-  bool _showVehiclePicker = false;  // Liste aus #vehicleSelection
-  bool _showCharging = false;       // Sofortladen-Panel
+  bool _showHub = false;
+  bool _showVehiclePicker = false;
+  bool _showCharging = false;
 
   bool _didAutoLogin = false;
-  bool _autoShowHub = true;         // nur 1x nach Login anzeigen
+  bool _autoShowHub = true;
   static const _cookieStoreKey = 'cookie_store_v1';
 
   String _lastUrl = '';
@@ -164,7 +159,6 @@ class _WebShellState extends State<WebShell> {
             _lastUrl = url;
             setState(() => _loading = false);
 
-            // B2C Login erkannt? -> Auto-Login (einmalig)
             if (await _isB2CLoginDom()) {
               if (!_didAutoLogin) {
                 _didAutoLogin = true;
@@ -172,11 +166,9 @@ class _WebShellState extends State<WebShell> {
               }
             }
 
-            // Eingeloggt -> Cookies sichern
             if (url.contains('VehicleAppointments')) {
               await _persistCookies(url);
               if (!mounted) return;
-              // Nur beim allerersten Erreichen den Hub automatisch zeigen
               if (_autoShowHub && !_showCharging && !_showVehiclePicker && !_showHub) {
                 setState(() { _showHub = true; });
               }
@@ -185,22 +177,61 @@ class _WebShellState extends State<WebShell> {
 
             await _persistCookies(url);
           },
+
           onNavigationRequest: (req) {
             final u = req.url;
+
+            // 1) soleco.ch -> direkt zur Login-Route umbiegen (VehicleAppointments löst B2C-Login aus)
+            try {
+              final host = Uri.parse(u).host.toLowerCase();
+              if (host == 'soleco.ch' || host.endsWith('.soleco.ch')) {
+                Future.microtask(() async { await _forceToLogin(); });
+                return NavigationDecision.prevent;
+              }
+            } catch (_) {}
+
+            // 2) HTML-Menü-Logout abfangen
+            if (u.startsWith('https://soleco-optimizer.ch/Account/SignOut') ||
+                u.contains('/Account/SignOut')) {
+              Future.microtask(() async { await _performSignOutAndGotoLogin(); });
+              return NavigationDecision.prevent;
+            }
+
+            // Tel/Mail extern
             if (u.startsWith('tel:') || u.startsWith('mailto:')) {
               launchUrl(Uri.parse(u), mode: LaunchMode.externalApplication);
               return NavigationDecision.prevent;
             }
+
             return NavigationDecision.navigate;
           },
         ),
       );
 
-    // Cookies wiederherstellen und Vehicle-Seite laden (Soleco leitet dann ggf. zum Login um)
+    // Cookies wiederherstellen und Vehicle-Seite laden
     Future.microtask(() async {
       await _restoreCookies();
       await _c.loadRequest(Uri.parse(vehicleUrl));
     });
+  }
+
+  // ---- Signout & Login-Redirect Hilfen ----
+  Future<void> _performSignOutAndGotoLogin() async {
+    try {
+      await cookieMgr.clearCookies();
+      try { await _c.runJavaScript('try{localStorage.clear();sessionStorage.clear();}catch(e){}'); } catch (_){}
+      await storage.delete(key: _cookieStoreKey);
+    } catch (_) {}
+    setState(() {
+      _didAutoLogin = false;
+      _autoShowHub = true;
+      _showHub = false; _showVehiclePicker = false; _showCharging = false;
+    });
+    await _c.loadRequest(Uri.parse(vehicleUrl)); // führt zuverlässig zum B2C-Login
+  }
+
+  Future<void> _forceToLogin() async {
+    await _performSignOutAndGotoLogin();
   }
 
   // ---------- Cookie-Persistenz ----------
@@ -308,34 +339,10 @@ class _WebShellState extends State<WebShell> {
 
   Future<void> _reload() => _c.reload();
 
-  /// ---------- Logout ----------
-  Future<void> _logout({bool switchAccount = false}) async {
-    try {
-      await cookieMgr.clearCookies();
-      // Kein _c.clearCache(); -> könnte je nach Pluginversion nicht existieren
-      try { await _c.runJavaScript('try{localStorage.clear();sessionStorage.clear();}catch(e){}'); } catch (_){}
-      await storage.delete(key: _cookieStoreKey);
-      if (switchAccount) {
-        await storage.delete(key: 'soleco_user');
-        await storage.delete(key: 'soleco_pass');
-      }
-      setState(() {
-        _didAutoLogin = false;
-        _autoShowHub = true; // Beim nächsten erfolgreichen Login wieder einmal anzeigen
-        _showHub = false; _showVehiclePicker = false; _showCharging = false;
-      });
-      await _c.loadRequest(Uri.parse(vehicleUrl));
-      if (switchAccount && mounted) {
-        Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const Gate()), (_) => false);
-      }
-    } catch (_) {}
-  }
-
   // ---------- Helfer: auf VehicleAppointments wechseln & warten ----------
   Future<void> _ensureOnVehiclePage() async {
     if (!_lastUrl.contains('VehicleAppointments')) {
       await _c.loadRequest(Uri.parse(vehicleUrl));
-      // warte, bis wir wirklich dort sind
       for (int i = 0; i < 60; i++) {
         await Future.delayed(const Duration(milliseconds: 200));
         if (_lastUrl.contains('VehicleAppointments')) break;
@@ -343,7 +350,7 @@ class _WebShellState extends State<WebShell> {
     }
   }
 
-  /// ---------- Fahrzeuge aus #vehicleSelection holen (robust + Polling) ----------
+  /// Fahrzeuge aus #vehicleSelection holen (robust + Polling)
   Future<List<VehicleItem>> _scanVehiclesOnce() async {
     final js = r'''
       (function(){
@@ -352,7 +359,6 @@ class _WebShellState extends State<WebShell> {
         var out = [];
         if(!root){ return JSON.stringify({ok:false, reason:'no_element', list:[]}); }
 
-        // DevExtreme-API (beachtet displayExpr / dataSource.items())
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst = jQuery(root).dxSelectBox('instance');
@@ -388,7 +394,6 @@ class _WebShellState extends State<WebShell> {
           }
         }catch(e){}
 
-        // Popup öffnen (lädt oft erst dann)
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst2 = jQuery(root).dxSelectBox('instance');
@@ -420,17 +425,12 @@ class _WebShellState extends State<WebShell> {
   }
 
   Future<List<VehicleItem>> _scanVehiclesWithPolling() async {
-    // Stelle sicher, dass wir auf der Fahrzeug-Seite sind
     await _ensureOnVehiclePage();
-
-    // Bis zu 4 Sekunden pollen (20 * 200ms)
     for (int i = 0; i < 20; i++) {
       final list = await _scanVehiclesOnce();
       if (list.isNotEmpty) return list;
       await Future.delayed(const Duration(milliseconds: 200));
     }
-
-    // Letzter Versuch: Seite neu laden und nochmals kurz pollen
     await _c.reload();
     for (int i = 0; i < 20; i++) {
       final list = await _scanVehiclesOnce();
@@ -440,7 +440,6 @@ class _WebShellState extends State<WebShell> {
     return [];
   }
 
-  /// Auswahl in #vehicleSelection setzen – erst API (selectedItem), dann DOM-Klick (Index)
   Future<String> _selectVehicle(VehicleItem v) async {
     final js = '''
       (function(){
@@ -476,7 +475,6 @@ class _WebShellState extends State<WebShell> {
           }
         }catch(e){}
 
-        // Fallback: DOM klicken
         try{
           var inst2 = (window.jQuery && jQuery.fn.dxSelectBox) ? jQuery(root).dxSelectBox('instance') : null;
           try{ inst2 && inst2.option('opened', true); }catch(e){}
@@ -504,7 +502,7 @@ class _WebShellState extends State<WebShell> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Soleco'),
-        leading: IconButton( // Startmenü jederzeit öffnen
+        leading: IconButton(
           tooltip: 'Start',
           icon: const Icon(Icons.apps),
           onPressed: () => setState(() {
@@ -516,50 +514,23 @@ class _WebShellState extends State<WebShell> {
         ),
         actions: [
           IconButton(onPressed: _reload, icon: const Icon(Icons.refresh)),
-          PopupMenuButton<String>(
-            onSelected: (value) async {
-              if (value == 'logout') {
-                await _logout(switchAccount: false);
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Abgemeldet.')),
-                  );
-                }
-              } else if (value == 'switch') {
-                await _logout(switchAccount: true);
-              }
+          IconButton(
+            tooltip: 'Login ändern',
+            icon: const Icon(Icons.manage_accounts),
+            onPressed: () {
+              Navigator.of(context).push(MaterialPageRoute(builder: (_) => const Gate()));
             },
-            itemBuilder: (context) => const [
-              PopupMenuItem(
-                value: 'logout',
-                child: ListTile(
-                  leading: Icon(Icons.logout),
-                  title: Text('Abmelden'),
-                  subtitle: Text('Cookies löschen, gleiches Konto'),
-                ),
-              ),
-              PopupMenuItem(
-                value: 'switch',
-                child: ListTile(
-                  leading: Icon(Icons.switch_account),
-                  title: Text('Abmelden & Konto wechseln'),
-                  subtitle: Text('Cookies + Zugangsdaten löschen'),
-                ),
-              ),
-            ],
           ),
         ],
       ),
       body: Stack(
         children: [
-          // WebView bleibt immer gemountet
           Offstage(
             offstage: _showHub || _showVehiclePicker || _showCharging,
             child: WebViewWidget(controller: _c),
           ),
           if (_loading) const LinearProgressIndicator(minHeight: 2),
 
-          // HUB: Webseite oder Auto (nur 1x automatisch; sonst per Apps-Icon)
           if (_showHub)
             HubOverlay(
               onWebsite: () async {
@@ -569,13 +540,11 @@ class _WebShellState extends State<WebShell> {
                   _showVehiclePicker = false;
                   _showCharging = false;
                 });
-                await _c.loadRequest(Uri.parse(viewsUrl)); // << /Views
+                await _c.loadRequest(Uri.parse(viewsUrl));
               },
               onAuto: () async {
-                setState(() {
-                  _autoShowHub = false;
-                });
-                final list = await _scanVehiclesWithPolling(); // auto öffnen / warten
+                setState(() { _autoShowHub = false; });
+                final list = await _scanVehiclesWithPolling();
                 if (list.length == 1) {
                   await _selectVehicle(list.first);
                   await Future.delayed(const Duration(milliseconds: 250));
@@ -590,7 +559,6 @@ class _WebShellState extends State<WebShell> {
               },
             ),
 
-          // Fahrzeug-Picker (aus #vehicleSelection)
           if (_showVehiclePicker)
             VehiclePickerOverlay(
               vehicles: _vehicles,
@@ -611,7 +579,6 @@ class _WebShellState extends State<WebShell> {
               },
             ),
 
-          // Sofortladen
           if (_showCharging)
             CustomChargingPanel(
               runJS: (code) => _c.runJavaScript(code),
@@ -620,8 +587,6 @@ class _WebShellState extends State<WebShell> {
                 _showHub = false;
                 _showVehiclePicker = false;
               }),
-              onLogout: () => _logout(switchAccount: false),
-              onSwitchAccount: () => _logout(switchAccount: true),
             ),
         ],
       ),
@@ -756,19 +721,15 @@ class VehiclePickerOverlay extends StatelessWidget {
   }
 }
 
-/// ---------------- Sofortladen-Panel ----------------
+/// ---------------- Sofortladen-Panel (ohne Logout) ----------------
 class CustomChargingPanel extends StatefulWidget {
   final Future<void> Function(String js) runJS;
   final VoidCallback onBackToWeb;
-  final Future<void> Function() onLogout;
-  final Future<void> Function() onSwitchAccount;
 
   const CustomChargingPanel({
     super.key,
     required this.runJS,
     required this.onBackToWeb,
-    required this.onLogout,
-    required this.onSwitchAccount,
   });
 
   @override
@@ -877,25 +838,6 @@ class _CustomChargingPanelState extends State<CustomChargingPanel> {
                     onPressed: widget.onBackToWeb,
                     icon: const Icon(Icons.public),
                     label: const Text('Zur Webseite'),
-                  ),
-                  const SizedBox(width: 12),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      await widget.onLogout();
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Abgemeldet.')),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.logout),
-                    label: const Text('Abmelden'),
-                  ),
-                  const SizedBox(width: 12),
-                  OutlinedButton.icon(
-                    onPressed: () async => widget.onSwitchAccount(),
-                    icon: const Icon(Icons.switch_account),
-                    label: const Text('Konto wechseln'),
                   ),
                 ],
               ),

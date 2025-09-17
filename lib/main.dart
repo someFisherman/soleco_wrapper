@@ -6,6 +6,13 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:webview_cookie_manager/webview_cookie_manager.dart';
 
+/// --- Datentyp für die Fahrzeugliste (bewusst ganz oben, damit überall bekannt) ---
+class VehicleItem {
+  final String label; // z. B. "Audi Q6"
+  final int index;    // Position in der dxSelectBox
+  VehicleItem({required this.label, required this.index});
+}
+
 void main() => runApp(const App());
 
 class App extends StatelessWidget {
@@ -305,7 +312,7 @@ class _WebShellState extends State<WebShell> {
   Future<void> _logout({bool switchAccount = false}) async {
     try {
       await cookieMgr.clearCookies();
-      await _c.clearCache();
+      // Kein _c.clearCache(); -> könnte je nach Pluginversion nicht existieren
       try { await _c.runJavaScript('try{localStorage.clear();sessionStorage.clear();}catch(e){}'); } catch (_){}
       await storage.delete(key: _cookieStoreKey);
       if (switchAccount) {
@@ -749,12 +756,6 @@ class VehiclePickerOverlay extends StatelessWidget {
   }
 }
 
-class VehicleItem {
-  final String label; // z. B. "Audi Q6"
-  final int index;    // Position in der dxSelectBox
-  VehicleItem({required this.label, required this.index});
-}
-
 /// ---------------- Sofortladen-Panel ----------------
 class CustomChargingPanel extends StatefulWidget {
   final Future<void> Function(String js) runJS;
@@ -881,7 +882,7 @@ class _CustomChargingPanelState extends State<CustomChargingPanel> {
                   OutlinedButton.icon(
                     onPressed: () async {
                       await widget.onLogout();
-                      if (context.mounted) {
+                      if (mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(content: Text('Abgemeldet.')),
                         );
@@ -922,10 +923,4 @@ class _CustomChargingPanelState extends State<CustomChargingPanel> {
       ),
     );
   }
-}
-
-class VehicleItem {
-  final String label; // z. B. "Audi Q6"
-  final int index;    // Position in der dxSelectBox
-  VehicleItem({required this.label, required this.index});
 }

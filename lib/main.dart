@@ -503,11 +503,21 @@ class _WebShellState extends State<WebShell> {
         var root = document.getElementById('vehicleSelection');
         if(!root) return 'no_element';
 
+        console.log('Trying to select vehicle at index: ' + idx);
+
         // Erste Methode: DevExtreme SelectBox API
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst = jQuery(root).dxSelectBox('instance');
             if(inst){
+              console.log('Found DevExtreme SelectBox instance');
+              
+              // Öffne das Dropdown
+              inst.option('opened', true);
+              
+              // Warte kurz und dann wähle das Item
+              setTimeout(function(){
+                try {
               var ds = inst.option('dataSource');
               var items = inst.option('items');
               var arr = [];
@@ -515,59 +525,77 @@ class _WebShellState extends State<WebShell> {
               else if (ds && typeof ds.items === 'function') arr = ds.items();
               else if (ds && Array.isArray(ds._items)) arr = ds._items;
 
-              if (Array.isArray(arr) && arr.length>idx){
-                var item = arr[idx];
-                
-                // Versuche selectedItem zu setzen
-                try{ 
-                  inst.option('selectedItem', item); 
-                var sel = inst.option('selectedItem');
-                  if (sel===item) { 
-                    try{ inst.option('opened', false);}catch(e){} 
-                    return 'set_selectedItem_success';
-                  }
-                }catch(e){}
+                  console.log('Available items: ' + arr.length);
 
-                // Versuche value zu setzen
+                  if (Array.isArray(arr) && arr.length > idx){
+                var item = arr[idx];
+                    console.log('Selecting item: ' + JSON.stringify(item));
+                    
+                    // Versuche selectedItem zu setzen
+                    try{ 
+                      inst.option('selectedItem', item); 
+                      inst.option('opened', false);
+                      console.log('Selected via selectedItem');
+                      return 'set_selectedItem_success';
+                    }catch(e){
+                      console.log('selectedItem failed: ' + e);
+                    }
+
+                    // Versuche value zu setzen
                 var valueExpr = inst.option('valueExpr');
                 if (typeof valueExpr==='string' && item && item[valueExpr] !== undefined){
-                  try{
+                      try{
                   inst.option('value', item[valueExpr]);
-                    var val = inst.option('value');
-                    if (val === item[valueExpr]) {
-                  try{ inst.option('opened', false);}catch(e){}
-                      return 'set_valueExpr_success';
+                        inst.option('opened', false);
+                        console.log('Selected via value: ' + item[valueExpr]);
+                        return 'set_valueExpr_success';
+                      }catch(e){
+                        console.log('value failed: ' + e);
+                      }
                     }
-                  }catch(e){}
+                  }
+                } catch(e) {
+                  console.log('Error in setTimeout: ' + e);
                 }
-              }
+              }, 300);
             }
           }
-        }catch(e){}
+        }catch(e){
+          console.log('DevExtreme method failed: ' + e);
+        }
 
         // Zweite Methode: DOM Click
         try{
+          console.log('Trying DOM click method');
           var inst2 = (window.jQuery && jQuery.fn.dxSelectBox) ? jQuery(root).dxSelectBox('instance') : null;
           try{ inst2 && inst2.option('opened', true); }catch(e){}
           
           // Warten kurz bis Popup geöffnet ist
           setTimeout(function(){
           var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item');
-          if(nodes.length>idx){
+            console.log('Found ' + nodes.length + ' dropdown items');
+            
+            if(nodes.length > idx){
+              console.log('Clicking on item ' + idx);
             nodes[idx].click();
-              // Verifikation: Prüfe ob Auswahl korrekt ist
+              
+              // Verifikation nach kurzer Zeit
               setTimeout(function(){
-                var selectedText = root.querySelector('.dx-selectbox .dx-texteditor-input')?.value || '';
-                var expectedText = '${v.label.replaceAll("'", "\\'")}';
-                if (selectedText.includes(expectedText) || expectedText.includes(selectedText)) {
-                  return 'clicked_dom_verified';
-                }
-              }, 100);
+                var input = root.querySelector('.dx-texteditor-input');
+                var selectedText = input ? input.value : '';
+                console.log('Selected text: ' + selectedText);
+              }, 200);
+              
+            return 'clicked_dom';
+            } else {
+              console.log('Not enough items in dropdown');
             }
-          }, 200);
+          }, 500);
           
           return 'clicked_dom';
-        }catch(e){}
+        }catch(e){
+          console.log('DOM click failed: ' + e);
+        }
         
         return 'failed';
       })();
@@ -576,21 +604,28 @@ class _WebShellState extends State<WebShell> {
     try {
       final res = await _main.runJavaScriptReturningResult(js);
       final result = res.toString();
+      print('Vehicle selection result: $result');
       
-      // Doppelter Check: Warten und dann nochmal prüfen
-      await Future.delayed(const Duration(milliseconds: 500));
+      // Längere Wartezeit für Fahrzeugwechsel
+      await Future.delayed(const Duration(milliseconds: 1500));
       
+      // Verifikation der Auswahl
       final verifyJs = '''
         (function(){
           var root = document.getElementById('vehicleSelection');
           if(!root) return 'no_element';
           
           var selectedText = '';
+          var selectedValue = '';
+          
           try{
             if(window.jQuery && jQuery.fn.dxSelectBox){
               var inst = jQuery(root).dxSelectBox('instance');
               if(inst){
                 var sel = inst.option('selectedItem');
+                var val = inst.option('value');
+                selectedValue = val || '';
+                
                 if(sel && typeof sel === 'object'){
                   var displayExpr = inst.option('displayExpr');
                   if (typeof displayExpr === 'string' && sel[displayExpr]) {
@@ -604,20 +639,26 @@ class _WebShellState extends State<WebShell> {
           }catch(e){}
           
           if(!selectedText){
-            var input = root.querySelector('.dx-selectbox .dx-texteditor-input');
+            var input = root.querySelector('.dx-texteditor-input');
             if(input) selectedText = input.value;
           }
           
+          console.log('Verification - Selected: "' + selectedText + '", Value: "' + selectedValue + '"');
+          
           var expectedText = '${v.label.replaceAll("'", "\\'")}';
-          return selectedText.includes(expectedText) || expectedText.includes(selectedText) ? 'verified' : 'not_verified';
+          var isCorrect = selectedText.includes(expectedText) || expectedText.includes(selectedText);
+          
+          return isCorrect ? 'verified' : 'not_verified';
         })();
       ''';
       
       final verifyRes = await _main.runJavaScriptReturningResult(verifyJs);
       final verifyResult = verifyRes.toString();
+      print('Vehicle selection verification: $verifyResult');
       
       return '$result|$verifyResult';
-    } catch (_) {
+    } catch (e) {
+      print('Vehicle selection error: $e');
       return 'error';
     }
   }
@@ -640,7 +681,7 @@ class _WebShellState extends State<WebShell> {
     // 1 Fahrzeug -> direkt wählen und sofort Laden-Sheet
     if (vehicles.length == 1) {
       await _selectVehicle(vehicles.first);
-      await Future.delayed(const Duration(milliseconds: 1000)); // Mehr Zeit für Datenaktualisierung
+      await Future.delayed(const Duration(milliseconds: 2000)); // Mehr Zeit für Datenaktualisierung
       if (!mounted) return;
       _openChargingSheet();
       return;
@@ -668,7 +709,7 @@ class _WebShellState extends State<WebShell> {
       if (!mounted) return;
       if (chosen != null) {
         await _selectVehicle(chosen);
-        await Future.delayed(const Duration(milliseconds: 1000)); // Mehr Zeit für Datenaktualisierung
+        await Future.delayed(const Duration(milliseconds: 2000)); // Mehr Zeit für Datenaktualisierung
         _openChargingSheet();
       } else {
         // abgebrochen -> Startmenü wieder zeigen
@@ -885,6 +926,7 @@ class _WebShellState extends State<WebShell> {
                     return true;
                   },
                   child: Container(
+                    margin: const EdgeInsets.only(bottom: 20), // 2cm nach oben
                     decoration: const BoxDecoration(
                       color: Colors.white,
                       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),

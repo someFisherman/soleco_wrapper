@@ -44,17 +44,12 @@ workflows:
           /usr/libexec/PlistBuddy -c "Add :CFBundleName string Optimizer" "$INFO"
           sed -i.bak -E "s/PRODUCT_BUNDLE_IDENTIFIER = [^;]+;/PRODUCT_BUNDLE_IDENTIFIER = ${BUNDLE_ID};/g" ios/Runner.xcodeproj/project.pbxproj
 
-      - name: 🔔 Configure iOS Notifications & Background Modes
+      - name: 🔔 Configure iOS Notifications (App Store Compatible)
         script: |
           set -euxo pipefail
           INFO="ios/Runner/Info.plist"
           
-          # Background Modes für Vehicle Monitoring hinzufügen
-          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$INFO" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string background-processing" "$INFO" 2>/dev/null || true
-          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:1 string background-fetch" "$INFO" 2>/dev/null || true
-          
-          # Notification Permissions
+          # Notification Permissions (ohne Background Modes für App Store)
           /usr/libexec/PlistBuddy -c "Add :NSUserNotificationUsageDescription string 'Diese App sendet Benachrichtigungen wenn Ihr Fahrzeug eingesteckt wird.'" "$INFO" 2>/dev/null || \
           /usr/libexec/PlistBuddy -c "Set :NSUserNotificationUsageDescription 'Diese App sendet Benachrichtigungen wenn Ihr Fahrzeug eingesteckt wird.'" "$INFO"
           
@@ -63,7 +58,7 @@ workflows:
           /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$INFO" 2>/dev/null || \
           /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$INFO"
           
-          echo "✅ iOS Permissions und Background Modes konfiguriert"
+          echo "✅ iOS Notifications konfiguriert (App Store kompatibel)"
 
       - name: 🔑 Fetch signing files (automatic)
         script: |

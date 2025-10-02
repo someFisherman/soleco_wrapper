@@ -1,27 +1,103 @@
-- name: 🔑 Fetch signing files (automatic)
-  script: |
-    set -euxo pipefail
-    test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER}"
-    test -n "${APP_STORE_CONNECT_ISSUER_ID}"
-    test -n "${APP_STORE_CONNECT_PRIVATE_KEY}"
-    test -n "${CERTIFICATE_PRIVATE_KEY}"   # <— NEU: prüfen, dass Key da ist
+workflows:
+  ios_signed:
+    name: iOS signed (Optimizer – TestFlight)
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      xcode: latest
+      groups:
+        - appstore_connect           # MUSS enthalten: APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_PRIVATE_KEY, CERTIFICATE_PRIVATE_KEY
+      vars:
+        BUNDLE_ID: ch.soleco.optimizer
+        EXPORT_METHOD: app-store     # "app-store" für TestFlight, alternativ "ad-hoc"
 
-    keychain initialize
+    cache:
+      cache_paths:
+        - $FLUTTER_ROOT/.pub-cache
+        - ios/Pods
 
-    if [ "$EXPORT_METHOD" = "ad-hoc" ]; then
-      SIGNING_TYPE="IOS_APP_ADHOC"
-    else
-      SIGNING_TYPE="IOS_APP_STORE"
-    fi
+    scripts:
+      - name: Resolve deps & iOS 13+
+        script: |
+          set -euxo pipefail
+          flutter --version
+          flutter pub get
+          # Falls noch kein iOS-Ordner existiert (neues Repo)
+          if [ ! -d ios ]; then
+            flutter create . --platforms=ios
+          fi
+          # iOS-Minimum OS
+          cd ios
+          sed -i.bak -e "s/platform :ios, '.*'/platform :ios, '13.0'/" Podfile || true
+          cd ..
 
-    app-store-connect fetch-signing-files \
-      --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
-      --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
-      --private-key "$APP_STORE_CONNECT_PRIVATE_KEY" \
-      --certificate-key "$CERTIFICATE_PRIVATE_KEY" \   # <— NEU: Private Key übergeben
-      --type "$SIGNING_TYPE" \
-      --create \
-      "$BUNDLE_ID"
+      - name: Set app name & bundle id (Optimizer)
+        script: |
+          set -euxo pipefail
+          INFO="ios/Runner/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Optimizer" "$INFO" 2>/dev/null || \
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Optimizer" "$INFO"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName Optimizer" "$INFO" 2>/dev/null || \
+          /usr/libexec/PlistBuddy -c "Add :CFBundleName string Optimizer" "$INFO"
+          # Bundle-ID im Xcode-Projekt setzen
+          sed -i.bak -E "s/PRODUCT_BUNDLE_IDENTIFIER = [^;]+;/PRODUCT_BUNDLE_IDENTIFIER = ${BUNDLE_ID};/g" ios/Runner.xcodeproj/project.pbxproj
 
-    keychain add-certificates
-    xcode-project use-profiles
+      - name: 🔑 Fetch signing files (automatic)
+        script: |
+          set -euxo pipefail
+          # Prüfen, dass alle Secrets da sind
+          test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER}"
+          test -n "${APP_STORE_CONNECT_ISSUER_ID}"
+          test -n "${APP_STORE_CONNECT_PRIVATE_KEY}"
+          test -n "${CERTIFICATE_PRIVATE_KEY}"
+
+          keychain initialize
+
+          # Export-Typ wählen (App Store / Ad-Hoc)
+          if [ "$EXPORT_METHOD" = "ad-hoc" ]; then
+            SIGNING_TYPE="IOS_APP_ADHOC"
+          else
+            SIGNING_TYPE="IOS_APP_STORE"
+          fi
+
+          # Profile & Zertifikate automatisch erstellen/holen
+          # -> ACHTUNG: Diese CLI-Version erwartet die Bundle-ID als POSITIONALES Argument am Ende
+          app-store-connect fetch-signing-files \
+            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+            --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+            --private-key "$APP_STORE_CONNECT_PRIVATE_KEY" \
+            --certificate-key "$CERTIFICATE_PRIVATE_KEY" \
+            --type "$SIGNING_TYPE" \
+            --create \
+            "$BUNDLE_ID"
+
+          # Zertifikate importieren & Profile im Xcode-Projekt setzen
+          keychain add-certificates
+          xcode-project use-profiles
+
+      - name: Build signed IPA (Release)
+        script: |
+          set -euxo pipefail
+          flutter clean
+          # Eindeutige Buildnummern über Codemagic-Var
+          flutter build ipa --release \
+            --build-name=1.0.$PROJECT_BUILD_NUMBER \
+            --build-number=$PROJECT_BUILD_NUMBER
+          echo "IPA(s):"
+          ls -la build/ios/ipa || true
+
+    publishing:
+      app_store_connect:
+        # Auth aus Environment-Variablen (Gruppe "appstore_connect")
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+
+        # TestFlight Upload aktiv
+        submit_to_testflight: true
+        # Optional: spezifische Gruppen freischalten
+        # beta_groups:
+        #   - Internal Testers
+
+    artifacts:
+      - build/ios/ipa/*.ipa

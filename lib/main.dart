@@ -362,6 +362,7 @@ class _WebShellState extends State<WebShell> {
         var root = document.getElementById('vehicleSelection');
         if(!root) return 'no_element';
 
+        // Erste Methode: DevExtreme SelectBox API
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst = jQuery(root).dxSelectBox('instance');
@@ -375,46 +376,122 @@ class _WebShellState extends State<WebShell> {
 
               if (Array.isArray(arr) && arr.length>idx){
                 var item = arr[idx];
-                try{ inst.option('selectedItem', item); }catch(e){}
-                var sel = inst.option('selectedItem');
-                if (sel===item) { try{ inst.option('opened', false);}catch(e){} return 'set_selectedItem'; }
+                
+                // Versuche selectedItem zu setzen
+                try{ 
+                  inst.option('selectedItem', item); 
+                  var sel = inst.option('selectedItem');
+                  if (sel===item) { 
+                    try{ inst.option('opened', false);}catch(e){} 
+                    return 'set_selectedItem_success';
+                  }
+                }catch(e){}
 
+                // Versuche value zu setzen
                 var valueExpr = inst.option('valueExpr');
                 if (typeof valueExpr==='string' && item && item[valueExpr] !== undefined){
-                  inst.option('value', item[valueExpr]);
-                  try{ inst.option('opened', false);}catch(e){}
-                  return 'set_valueExpr';
+                  try{
+                    inst.option('value', item[valueExpr]);
+                    var val = inst.option('value');
+                    if (val === item[valueExpr]) {
+                      try{ inst.option('opened', false);}catch(e){}
+                      return 'set_valueExpr_success';
+                    }
+                  }catch(e){}
                 }
               }
             }
           }
         }catch(e){}
 
+        // Zweite Methode: DOM Click
         try{
           var inst2 = (window.jQuery && jQuery.fn.dxSelectBox) ? jQuery(root).dxSelectBox('instance') : null;
           try{ inst2 && inst2.option('opened', true); }catch(e){}
-          var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item');
-          if(nodes.length>idx){
-            nodes[idx].click();
-            return 'clicked_dom';
-          }
+          
+          // Warten kurz bis Popup geöffnet ist
+          setTimeout(function(){
+            var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item');
+            if(nodes.length>idx){
+              nodes[idx].click();
+              // Verifikation: Prüfe ob Auswahl korrekt ist
+              setTimeout(function(){
+                var selectedText = root.querySelector('.dx-selectbox .dx-texteditor-input')?.value || '';
+                var expectedText = '${v.label.replaceAll("'", "\\'")}';
+                if (selectedText.includes(expectedText) || expectedText.includes(selectedText)) {
+                  return 'clicked_dom_verified';
+                }
+              }, 100);
+            }
+          }, 200);
+          
+          return 'clicked_dom';
         }catch(e){}
+        
         return 'failed';
       })();
     ''';
 
     try {
       final res = await _main.runJavaScriptReturningResult(js);
-      return res.toString();
+      final result = res.toString();
+      
+      // Doppelter Check: Warten und dann nochmal prüfen
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      final verifyJs = '''
+        (function(){
+          var root = document.getElementById('vehicleSelection');
+          if(!root) return 'no_element';
+          
+          var selectedText = '';
+          try{
+            if(window.jQuery && jQuery.fn.dxSelectBox){
+              var inst = jQuery(root).dxSelectBox('instance');
+              if(inst){
+                var sel = inst.option('selectedItem');
+                if(sel && typeof sel === 'object'){
+                  var displayExpr = inst.option('displayExpr');
+                  if (typeof displayExpr === 'string' && sel[displayExpr]) {
+                    selectedText = sel[displayExpr];
+                  } else {
+                    selectedText = sel.text || sel.name || sel.label || sel.value || '';
+                  }
+                }
+              }
+            }
+          }catch(e){}
+          
+          if(!selectedText){
+            var input = root.querySelector('.dx-selectbox .dx-texteditor-input');
+            if(input) selectedText = input.value;
+          }
+          
+          var expectedText = '${v.label.replaceAll("'", "\\'")}';
+          return selectedText.includes(expectedText) || expectedText.includes(selectedText) ? 'verified' : 'not_verified';
+        })();
+      ''';
+      
+      final verifyRes = await _main.runJavaScriptReturningResult(verifyJs);
+      final verifyResult = verifyRes.toString();
+      
+      return '$result|$verifyResult';
     } catch (_) {
       return 'error';
     }
   }
 
-  // ---------- Startmenü-Aktion: nur „Auto“ ----------
+  // ---------- Startmenü-Aktion: nur „Auto" ----------
   Future<void> _openAuto() async {
     setState(() => _showStartMenu = false);
     await _main.loadRequest(Uri.parse(startVehicleUrl));
+
+    // Prüfen ob wir auf der Login-Seite sind
+    final currentUrl = await _main.currentUrl();
+    if (currentUrl != null && await _isB2CLoginDom()) {
+      // Auf Login-Seite - kein Sheet anzeigen
+      return;
+    }
 
     // Fahrzeuge ermitteln (automatisch neu scannen, falls leer)
     final vehicles = await _scanVehiclesWithPolling();
@@ -473,6 +550,8 @@ class _WebShellState extends State<WebShell> {
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
+      isDismissible: true,
+      enableDrag: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -593,8 +672,12 @@ class _WebShellState extends State<WebShell> {
                     const SnackBar(content: Text('Abgemeldet.')),
                   );
                 }
+                // Erst abmelden, dann zur Login-Seite weiterleiten
                 await _main.loadRequest(
                     Uri.parse('https://soleco-optimizer.ch/Account/SignOut'));
+                // Kurz warten und dann zur Login-Seite
+                await Future.delayed(const Duration(milliseconds: 1000));
+                await _main.loadRequest(Uri.parse(startVehicleUrl));
                 _didAutoLogin = false;
                 setState(() => _showStartMenu = true);
               }

@@ -497,104 +497,110 @@ class _WebShellState extends State<WebShell> {
   }
 
   Future<String> _selectVehicle(VehicleItem v) async {
+    print('🚗 Selecting vehicle: ${v.label} (index: ${v.index})');
+    
     final js = '''
       (function(){
         var idx = ${v.index};
         var root = document.getElementById('vehicleSelection');
-        if(!root) return 'no_element';
+        if(!root) {
+          console.log('❌ vehicleSelection element not found');
+          return 'no_element';
+        }
 
-        console.log('Trying to select vehicle at index: ' + idx);
+        console.log('🎯 Trying to select vehicle at index: ' + idx);
 
-        // Erste Methode: DevExtreme SelectBox API
+        // Methode 1: Direkte DevExtreme API
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst = jQuery(root).dxSelectBox('instance');
             if(inst){
-              console.log('Found DevExtreme SelectBox instance');
+              console.log('✅ Found DevExtreme SelectBox instance');
               
-              // Öffne das Dropdown
-              inst.option('opened', true);
-              
-              // Warte kurz und dann wähle das Item
-              setTimeout(function(){
-                try {
+              // Hole alle verfügbaren Items
               var ds = inst.option('dataSource');
               var items = inst.option('items');
               var arr = [];
-              if (Array.isArray(items)) arr = items;
-              else if (ds && typeof ds.items === 'function') arr = ds.items();
-              else if (ds && Array.isArray(ds._items)) arr = ds._items;
+              
+              if (Array.isArray(items)) {
+                arr = items;
+              } else if (ds && typeof ds.items === 'function') {
+                arr = ds.items();
+              } else if (ds && Array.isArray(ds._items)) {
+                arr = ds._items;
+              }
 
-                  console.log('Available items: ' + arr.length);
+              console.log('📋 Available items: ' + arr.length);
+              console.log('📋 Items: ' + JSON.stringify(arr));
 
-                  if (Array.isArray(arr) && arr.length > idx){
+              if (Array.isArray(arr) && arr.length > idx){
                 var item = arr[idx];
-                    console.log('Selecting item: ' + JSON.stringify(item));
-                    
-                    // Versuche selectedItem zu setzen
-                    try{ 
-                      inst.option('selectedItem', item); 
-                      inst.option('opened', false);
-                      console.log('Selected via selectedItem');
-                      return 'set_selectedItem_success';
-                    }catch(e){
-                      console.log('selectedItem failed: ' + e);
-                    }
-
-                    // Versuche value zu setzen
+                console.log('🎯 Selecting item: ' + JSON.stringify(item));
+                
+                // Versuche verschiedene Methoden
+                try {
+                  // Methode 1: selectedItem
+                  inst.option('selectedItem', item);
+                  console.log('✅ Set selectedItem');
+                  
+                  // Methode 2: value
                 var valueExpr = inst.option('valueExpr');
-                if (typeof valueExpr==='string' && item && item[valueExpr] !== undefined){
-                      try{
+                  if (typeof valueExpr === 'string' && item[valueExpr] !== undefined) {
                   inst.option('value', item[valueExpr]);
-                        inst.option('opened', false);
-                        console.log('Selected via value: ' + item[valueExpr]);
-                        return 'set_valueExpr_success';
-                      }catch(e){
-                        console.log('value failed: ' + e);
-                      }
-                    }
+                    console.log('✅ Set value: ' + item[valueExpr]);
                   }
+                  
+                  // Methode 3: selectedIndex
+                  inst.option('selectedIndex', idx);
+                  console.log('✅ Set selectedIndex: ' + idx);
+                  
+                  // Schließe das Dropdown
+                  inst.option('opened', false);
+                  
+                  // Trigger change event
+                  inst.option('onValueChanged', function(e) {
+                    console.log('🔄 Value changed to: ' + e.value);
+                  });
+                  
+                  return 'success';
                 } catch(e) {
-                  console.log('Error in setTimeout: ' + e);
+                  console.log('❌ Error setting selection: ' + e);
                 }
-              }, 300);
+              } else {
+                console.log('❌ Not enough items or invalid index');
+              }
             }
           }
-        }catch(e){
-          console.log('DevExtreme method failed: ' + e);
+        } catch(e) {
+          console.log('❌ DevExtreme method failed: ' + e);
         }
 
-        // Zweite Methode: DOM Click
+        // Methode 2: DOM Click Simulation
         try{
-          console.log('Trying DOM click method');
-          var inst2 = (window.jQuery && jQuery.fn.dxSelectBox) ? jQuery(root).dxSelectBox('instance') : null;
-          try{ inst2 && inst2.option('opened', true); }catch(e){}
+          console.log('🖱️ Trying DOM click method');
           
-          // Warten kurz bis Popup geöffnet ist
+          // Öffne das Dropdown
+          var clickEvent = new MouseEvent('click', { bubbles: true });
+          root.dispatchEvent(clickEvent);
+          
+          // Warte und klicke auf das Item
           setTimeout(function(){
-          var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item');
-            console.log('Found ' + nodes.length + ' dropdown items');
-            
-            if(nodes.length > idx){
-              console.log('Clicking on item ' + idx);
-            nodes[idx].click();
+            var dropdown = document.querySelector('.dx-selectbox-popup');
+            if (dropdown) {
+              var items = dropdown.querySelectorAll('.dx-item');
+              console.log('📋 Found ' + items.length + ' dropdown items');
               
-              // Verifikation nach kurzer Zeit
-              setTimeout(function(){
-                var input = root.querySelector('.dx-texteditor-input');
-                var selectedText = input ? input.value : '';
-                console.log('Selected text: ' + selectedText);
-              }, 200);
-              
+              if (items.length > idx) {
+                console.log('🖱️ Clicking on item ' + idx);
+                items[idx].click();
             return 'clicked_dom';
-            } else {
-              console.log('Not enough items in dropdown');
+          }
             }
           }, 500);
           
           return 'clicked_dom';
-        }catch(e){
-          console.log('DOM click failed: ' + e);
+        } catch(e) {
+          console.log('❌ DOM click failed: ' + e);
         }
         
         return 'failed';
@@ -604,12 +610,12 @@ class _WebShellState extends State<WebShell> {
     try {
       final res = await _main.runJavaScriptReturningResult(js);
       final result = res.toString();
-      print('Vehicle selection result: $result');
+      print('🚗 Vehicle selection result: $result');
       
-      // Längere Wartezeit für Fahrzeugwechsel
-      await Future.delayed(const Duration(milliseconds: 1500));
+      // Warte auf Datenaktualisierung
+      await Future.delayed(const Duration(milliseconds: 3000));
       
-      // Verifikation der Auswahl
+      // Verifikation
       final verifyJs = '''
         (function(){
           var root = document.getElementById('vehicleSelection');
@@ -636,14 +642,14 @@ class _WebShellState extends State<WebShell> {
                 }
               }
             }
-          }catch(e){}
+          } catch(e) {}
           
           if(!selectedText){
             var input = root.querySelector('.dx-texteditor-input');
             if(input) selectedText = input.value;
           }
           
-          console.log('Verification - Selected: "' + selectedText + '", Value: "' + selectedValue + '"');
+          console.log('✅ Verification - Selected: "' + selectedText + '", Value: "' + selectedValue + '"');
           
           var expectedText = '${v.label.replaceAll("'", "\\'")}';
           var isCorrect = selectedText.includes(expectedText) || expectedText.includes(selectedText);
@@ -654,11 +660,11 @@ class _WebShellState extends State<WebShell> {
       
       final verifyRes = await _main.runJavaScriptReturningResult(verifyJs);
       final verifyResult = verifyRes.toString();
-      print('Vehicle selection verification: $verifyResult');
+      print('✅ Vehicle selection verification: $verifyResult');
       
       return '$result|$verifyResult';
     } catch (e) {
-      print('Vehicle selection error: $e');
+      print('❌ Vehicle selection error: $e');
       return 'error';
     }
   }
@@ -681,7 +687,7 @@ class _WebShellState extends State<WebShell> {
     // 1 Fahrzeug -> direkt wählen und sofort Laden-Sheet
     if (vehicles.length == 1) {
       await _selectVehicle(vehicles.first);
-      await Future.delayed(const Duration(milliseconds: 2000)); // Mehr Zeit für Datenaktualisierung
+      await Future.delayed(const Duration(milliseconds: 3000)); // Mehr Zeit für Datenaktualisierung
       if (!mounted) return;
       _openChargingSheet();
       return;
@@ -897,63 +903,50 @@ class _WebShellState extends State<WebShell> {
         children: [
           WebViewWidget(controller: _main),
           if (_loading) const LinearProgressIndicator(minHeight: 2),
-          if (_showStartMenu) const _StartOverlay(),
         ],
       ),
       floatingActionButton: _showStartMenu
           ? null
-          : FloatingActionButton.extended(
+          : Container(
+              margin: const EdgeInsets.only(bottom: 100), // Höher positionieren
+              child: FloatingActionButton.extended(
               onPressed: () => setState(() => _showStartMenu = true),
               backgroundColor: Brand.primary,
               foregroundColor: Colors.white,
               icon: const Icon(Icons.home),
               label: const Text('Start'),
+              ),
             ),
       bottomSheet: _showStartMenu
-          ? DraggableScrollableSheet(
-              initialChildSize: 0.25,
-              minChildSize: 0.1,
-              maxChildSize: 0.4,
-              snap: true,
-              snapSizes: const [0.1, 0.25],
-              builder: (context, scrollController) {
-                return NotificationListener<DraggableScrollableNotification>(
-                  onNotification: (notification) {
-                    // Wenn das Sheet sehr klein wird, schließen wir es
-                    if (notification.extent <= 0.15) {
-                      setState(() => _showStartMenu = false);
-                    }
-                    return true;
-                  },
-                  child: Container(
-                    margin: const EdgeInsets.only(bottom: 20), // 2cm nach oben
-                    decoration: const BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-                    ),
-                    child: Column(
-                      children: [
-                        // Handle zum Ziehen
-                        Container(
-                          margin: const EdgeInsets.only(top: 12),
-                          width: 42,
-                          height: 4,
-                          decoration: BoxDecoration(
-                            color: Colors.black12,
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                        ),
-                        // StartMenu Inhalt
-                        Expanded(
-                          child: StartMenu(
-              onAuto: _openAuto,
-                          ),
-                        ),
-                      ],
+          ? Container(
+              height: MediaQuery.of(context).size.height * 0.35, // Feste Höhe, blockiert nicht den ganzen Screen
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+              ),
+              child: Column(
+                children: [
+                  // Handle zum Ziehen
+                  Container(
+                    margin: const EdgeInsets.only(top: 12),
+                    width: 42,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.black12,
+                      borderRadius: BorderRadius.circular(2),
                     ),
                   ),
-                );
-              },
+                  // StartMenu Inhalt
+                  Expanded(
+                    child: StartMenu(
+                      onClose: () => setState(() => _showStartMenu = false),
+              onAuto: _openAuto,
+                      onInstant: _openInstant,
+                      onPlanned: _openPlanned,
+                    ),
+                  ),
+                ],
+              ),
             )
           : null,
     );
@@ -962,8 +955,18 @@ class _WebShellState extends State<WebShell> {
 
 /// Startmenü – schwebende Karte unten (nur noch „Auto“)
 class StartMenu extends StatelessWidget {
+  final VoidCallback? onClose;
   final VoidCallback onAuto;
-  const StartMenu({super.key, required this.onAuto});
+  final VoidCallback? onInstant;
+  final VoidCallback? onPlanned;
+  
+  const StartMenu({
+    super.key, 
+    this.onClose,
+    required this.onAuto,
+    this.onInstant,
+    this.onPlanned,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -981,8 +984,20 @@ class StartMenu extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
             const Text('Schnellstart',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+                if (onClose != null)
+                  IconButton(
+                    onPressed: onClose,
+                    icon: const Icon(Icons.close, size: 20),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+              ],
+            ),
             const SizedBox(height: 10),
             Row(
               children: [
@@ -1041,24 +1056,6 @@ class _RoundAction extends StatelessWidget {
   }
 }
 
-/// zartes Overlay-Hintergrundmuster
-class _StartOverlay extends StatelessWidget {
-  const _StartOverlay();
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Colors.transparent, Color(0x11F28C00)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 /// ---- Login speichern / ändern ----
 class CredsScreen extends StatefulWidget {
@@ -1406,7 +1403,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: MediaQuery.of(context).size.height * 0.7,
+      height: MediaQuery.of(context).size.height * 0.6, // Kleiner machen
       decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -1743,9 +1740,8 @@ class _ChargingSheetState extends State<ChargingSheet> {
             const SizedBox(height: 24),
           ],
           
-          const Spacer(),
-          
-          // Quick Charge Button
+          // Quick Charge Button (ohne Spacer, direkt nach der Berechnung)
+          const SizedBox(height: 16),
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(

@@ -198,8 +198,6 @@ class _WebShellState extends State<WebShell> {
   bool _loading = true;
   bool _showStartMenu = true;
   bool _didAutoLogin = false;
-  bool _vehiclePluggedIn = false;
-  Timer? _vehicleMonitoringTimer;
 
   @override
   void initState() {
@@ -210,40 +208,20 @@ class _WebShellState extends State<WebShell> {
     Future.microtask(() async {
       await _restoreCookies();
       await _main.loadRequest(Uri.parse(startVehicleUrl));
-      _startVehicleMonitoring();
+      // Vehicle monitoring disabled to prevent WebView interference
     });
   }
 
-  @override
-  void dispose() {
-    _vehicleMonitoringTimer?.cancel();
-    super.dispose();
-  }
 
-  // ---------- Vehicle Monitoring ----------
+  // ---------- Vehicle Monitoring (Disabled to prevent WebView issues) ----------
   void _startVehicleMonitoring() {
-    _vehicleMonitoringTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
-      _checkVehicleStatus();
-    });
+    // Vehicle monitoring disabled to prevent WebView interference
+    print('Vehicle monitoring disabled to prevent WebView issues');
   }
 
   Future<void> _checkVehicleStatus() async {
-    try {
-      final isPluggedIn = await checkVehiclePluggedIn(_main);
-      
-      // Nur Benachrichtigung senden wenn Status sich geändert hat
-      if (isPluggedIn && !_vehiclePluggedIn) {
-        _vehiclePluggedIn = true;
-        await _showVehicleNotification();
-        print('🚗 Fahrzeug erkannt! Benachrichtigung gesendet.');
-      } else if (!isPluggedIn && _vehiclePluggedIn) {
-        _vehiclePluggedIn = false;
-        print('🚗 Fahrzeug getrennt.');
-        // Optional: Benachrichtigung für "Fahrzeug getrennt"
-      }
-    } catch (e) {
-      print('Fehler beim Überwachen des Fahrzeugstatus: $e');
-    }
+    // Vehicle status checking disabled to prevent WebView interference
+    print('Vehicle status checking disabled');
   }
 
   Future<void> _showVehicleNotification() async {
@@ -1236,39 +1214,52 @@ class _ChargingSheetState extends State<ChargingSheet> {
     // Daten aus der WebView sammeln
     try {
       // Warten kurz, damit die Seite vollständig geladen ist
-      await Future.delayed(const Duration(milliseconds: 500));
+      await Future.delayed(const Duration(milliseconds: 1000));
       
       // Current Range aus VehicleAppointments sammeln
       final currentRangeJs = '''
         (function(){
-          // Verschiedene Selektoren versuchen
+          // Spezifische Selektoren für Current Range
           var selectors = [
             'input[name="CurrentRange"]',
             'input[id*="CurrentRange"]',
-            '.dx-numberbox input[aria-valuenow]',
-            'input[aria-valuenow]'
+            'input[aria-valuenow]',
+            '.dx-numberbox input[value]',
+            'input[type="text"][readonly]'
           ];
           
           for (var i = 0; i < selectors.length; i++) {
-            var input = document.querySelector(selectors[i]);
-            if (input) {
+            var inputs = document.querySelectorAll(selectors[i]);
+            for (var j = 0; j < inputs.length; j++) {
+              var input = inputs[j];
               var value = input.value || input.getAttribute('aria-valuenow') || input.getAttribute('value');
-              if (value) {
-                return parseInt(value) || 0;
+              if (value && !isNaN(parseInt(value))) {
+                var num = parseInt(value);
+                if (num > 0 && num < 1000) { // Realistische Range
+                  console.log('Current Range gefunden: ' + num);
+                  return num;
+                }
               }
             }
           }
           
-          // Fallback: Suche nach Text mit "km" oder Zahlen
-          var textElements = document.querySelectorAll('*');
-          for (var i = 0; i < textElements.length; i++) {
-            var text = textElements[i].textContent || '';
-            if (text.match(/\\d+\\s*km/i)) {
+          // Fallback: Suche nach Zahlen in der Nähe von "km"
+          var allElements = document.querySelectorAll('*');
+          for (var i = 0; i < allElements.length; i++) {
+            var text = allElements[i].textContent || '';
+            if (text.includes('km') && text.match(/\\d+/)) {
               var match = text.match(/(\\d+)/);
-              if (match) return parseInt(match[1]);
+              if (match) {
+                var num = parseInt(match[1]);
+                if (num > 0 && num < 1000) {
+                  console.log('Current Range aus Text gefunden: ' + num);
+                  return num;
+                }
+              }
             }
           }
           
+          console.log('Kein Current Range gefunden');
           return 0;
         })();
       ''';
@@ -1276,29 +1267,54 @@ class _ChargingSheetState extends State<ChargingSheet> {
       // Max Range aus Settings/VehiclesConfig sammeln
       final maxRangeJs = '''
         (function(){
-          // Verschiedene Selektoren versuchen
+          // Spezifische Selektoren für Max Range
           var selectors = [
             'input[name="DistanceMax"]',
             'input[id*="DistanceMax"]',
             'input[id*="Max"]',
-            '.dx-numberbox input[aria-valuenow]'
+            'input[aria-valuenow]',
+            '.dx-numberbox input[value]'
           ];
           
           for (var i = 0; i < selectors.length; i++) {
-            var input = document.querySelector(selectors[i]);
-            if (input) {
+            var inputs = document.querySelectorAll(selectors[i]);
+            for (var j = 0; j < inputs.length; j++) {
+              var input = inputs[j];
               var value = input.value || input.getAttribute('aria-valuenow') || input.getAttribute('value');
-              if (value) {
-                return parseInt(value) || 0;
+              if (value && !isNaN(parseInt(value))) {
+                var num = parseInt(value);
+                if (num > 200 && num < 1000) { // Realistische Max Range
+                  console.log('Max Range gefunden: ' + num);
+                  return num;
+                }
               }
             }
           }
           
+          // Fallback: Suche nach größeren Zahlen (wahrscheinlich Max Range)
+          var allElements = document.querySelectorAll('*');
+          for (var i = 0; i < allElements.length; i++) {
+            var text = allElements[i].textContent || '';
+            if (text.includes('km') && text.match(/\\d+/)) {
+              var matches = text.match(/\\d+/g);
+              if (matches) {
+                for (var k = 0; k < matches.length; k++) {
+                  var num = parseInt(matches[k]);
+                  if (num > 200 && num < 1000) {
+                    console.log('Max Range aus Text gefunden: ' + num);
+                    return num;
+                  }
+                }
+              }
+            }
+          }
+          
+          console.log('Kein Max Range gefunden');
           return 0;
         })();
       ''';
       
-      print('Lade Fahrzeugdaten...');
+      print('Lade echte Fahrzeugdaten...');
       final currentRangeResult = await widget.webViewController.runJavaScriptReturningResult(currentRangeJs);
       final maxRangeResult = await widget.webViewController.runJavaScriptReturningResult(maxRangeJs);
       
@@ -1314,19 +1330,19 @@ class _ChargingSheetState extends State<ChargingSheet> {
           _currentRange = currentRange;
           _maxRange = maxRange;
         });
-        print('Fahrzeugdaten geladen: Current: $currentRange km, Max: $maxRange km');
+        print('✅ Echte Fahrzeugdaten geladen: Current: $currentRange km, Max: $maxRange km');
       } else {
         // Fallback zu realistischen Testwerten
         setState(() {
           _currentRange = 184;
           _maxRange = 455;
         });
-        print('Fallback zu Testwerten: Current: 184 km, Max: 455 km');
+        print('⚠️ Fallback zu Testwerten: Current: 184 km, Max: 455 km');
       }
       
       _calculateQuickCharge();
     } catch (e) {
-      print('Fehler beim Laden der Fahrzeugdaten: $e');
+      print('❌ Fehler beim Laden der Fahrzeugdaten: $e');
       // Fallback zu Testwerten
       setState(() {
         _currentRange = 184;
@@ -1633,6 +1649,17 @@ class _ChargingSheetState extends State<ChargingSheet> {
                     Text('${(_maxRange * _chargePercentage / 100).round()} km', 
                          style: const TextStyle(fontWeight: FontWeight.bold, color: Brand.primary)),
                   ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _currentRange == 184 && _maxRange == 455 
+                    ? '⚠️ Testwerte - Daten werden aus WebView geladen...' 
+                    : '✅ Echte Fahrzeugdaten geladen',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: _currentRange == 184 && _maxRange == 455 ? Colors.orange : Colors.green,
+                    fontStyle: FontStyle.italic,
+                  ),
                 ),
               ],
             ),

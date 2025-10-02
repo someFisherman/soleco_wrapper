@@ -5,6 +5,9 @@ workflows:
     environment:
       flutter: stable
       xcode: latest
+      vars:
+        BUNDLE_ID: ch.soleco.optimizer
+        EXPORT_METHOD: app-store   # oder ad-hoc
     cache:
       cache_paths:
         - $FLUTTER_ROOT/.pub-cache
@@ -19,23 +22,47 @@ workflows:
           sed -i.bak -e "s/platform :ios, '.*'/platform :ios, '13.0'/" Podfile || true
           cd ..
 
-      - name: Set app name & bundle id (ch.soleco.optimizer)
+      - name: Set app name & bundle id (Optimizer)
         script: |
-          BUNDLE_ID="ch.soleco.optimizer"
           INFO="ios/Runner/Info.plist"
-
           /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Optimizer" "$INFO" 2>/dev/null || \
           /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Optimizer" "$INFO"
           /usr/libexec/PlistBuddy -c "Set :CFBundleName Optimizer" "$INFO" 2>/dev/null || \
           /usr/libexec/PlistBuddy -c "Add :CFBundleName string Optimizer" "$INFO"
-
           sed -i.bak -E "s/PRODUCT_BUNDLE_IDENTIFIER = [^;]+;/PRODUCT_BUNDLE_IDENTIFIER = ${BUNDLE_ID};/g" ios/Runner.xcodeproj/project.pbxproj
+
+      - name: 🔑 Fetch signing files (automatic)
+        script: |
+          set -euxo pipefail
+          # Keychain vorbereiten & API-Key auf Disk schreiben
+          keychain initialize
+          echo "$APP_STORE_CONNECT_PRIVATE_KEY" > /tmp/appstore_key.p8
+
+          # Typ wählen: App Store (TestFlight) oder Ad-Hoc
+          if [ "$EXPORT_METHOD" = "ad-hoc" ]; then
+            SIGNING_TYPE="IOS_ADHOC"
+          else
+            SIGNING_TYPE="IOS_APP_STORE"
+          fi
+
+          # Profile & Zertifikate automatisch holen/erzeugen
+          app-store-connect fetch-signing-files \
+            --api-key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+            --api-issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+            --api-private-key-file /tmp/appstore_key.p8 \
+            --type "$SIGNING_TYPE" \
+            --bundle-identifier "$BUNDLE_ID" \
+            --create \
+            --team-id "$APP_STORE_TEAM_ID"
+
+          # Zertifikate in die Keychain importieren, Profile ins Xcode-Projekt schreiben
+          keychain add-certificates
+          xcode-project use-profiles
 
       - name: Build signed IPA (Release)
         script: |
           flutter clean
           flutter build ipa --release
-          echo "IPA(s):"
           ls -la build/ios/ipa || true
 
     artifacts:

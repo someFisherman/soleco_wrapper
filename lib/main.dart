@@ -8,8 +8,152 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_cookie_manager/webview_cookie_manager.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:workmanager/workmanager.dart';
 
-void main() => runApp(const OptimizerApp());
+// Notification Service
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = 
+    FlutterLocalNotificationsPlugin();
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize notifications
+  await _initializeNotifications();
+  
+  // Initialize background service
+  await Workmanager().initialize(
+    callbackDispatcher,
+    isInDebugMode: false,
+  );
+  
+  // Register periodic task for vehicle monitoring
+  await Workmanager().registerPeriodicTask(
+    "vehicle-monitoring",
+    "vehicleMonitoringTask",
+    frequency: const Duration(minutes: 1),
+  );
+  
+  runApp(const OptimizerApp());
+}
+
+// Background task callback
+@pragma('vm:entry-point')
+void callbackDispatcher() {
+  Workmanager().executeTask((task, inputData) async {
+    switch (task) {
+      case "vehicleMonitoringTask":
+        await _checkVehicleStatus();
+        break;
+    }
+    return Future.value(true);
+  });
+}
+
+// Initialize notifications
+Future<void> _initializeNotifications() async {
+  const AndroidInitializationSettings initializationSettingsAndroid =
+      AndroidInitializationSettings('@mipmap/ic_launcher');
+  
+  const InitializationSettings initializationSettings =
+      InitializationSettings(android: initializationSettingsAndroid);
+  
+  await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+}
+
+// Check vehicle status in background
+Future<void> _checkVehicleStatus() async {
+  // This would check if a vehicle is plugged in
+  // For now, we'll simulate this
+  final isVehiclePlugged = await _simulateVehicleCheck();
+  
+  if (isVehiclePlugged) {
+    await _showVehicleNotification();
+  }
+}
+
+// Check if vehicle is plugged in by monitoring the WebView
+Future<bool> _simulateVehicleCheck() async {
+  try {
+    // This would need access to the WebViewController
+    // For now, we'll implement a simple check
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Real vehicle detection function (to be called from WebShell)
+Future<bool> checkVehiclePluggedIn(WebViewController controller) async {
+  try {
+    final js = '''
+      (function(){
+        // Check for specific SVG text elements that show vehicle status
+        var statusTexts = [
+          'Home, Ready',
+          'Away',
+          'Charging',
+          'Connected',
+          'Plugged'
+        ];
+        
+        // Look for SVG text elements with specific IDs or content
+        var svgTexts = document.querySelectorAll('text[id*="text860"], text[id*="tspan858"]');
+        
+        for (var i = 0; i < svgTexts.length; i++) {
+          var text = svgTexts[i].textContent.trim();
+          console.log('Found SVG text: "' + text + '"');
+          
+          // Check if text indicates vehicle is plugged in
+          if (text === 'Home, Ready' || text === 'Charging' || text === 'Connected' || text === 'Plugged') {
+            return true;
+          }
+        }
+        
+        // Fallback: Look for any text containing these status indicators
+        var allTexts = document.querySelectorAll('text, span, div, p');
+        for (var i = 0; i < allTexts.length; i++) {
+          var text = allTexts[i].textContent.trim();
+          if (text === 'Home, Ready' || text === 'Charging' || text === 'Connected' || text === 'Plugged') {
+            return true;
+          }
+        }
+        
+        return false;
+      })();
+    ''';
+    
+    final result = await controller.runJavaScriptReturningResult(js);
+    print('Vehicle detection result: $result');
+    return result.toString() == 'true';
+  } catch (e) {
+    print('Error in vehicle detection: $e');
+    return false;
+  }
+}
+
+// Show notification when vehicle is plugged in
+Future<void> _showVehicleNotification() async {
+  const AndroidNotificationDetails androidPlatformChannelSpecifics =
+      AndroidNotificationDetails(
+    'vehicle_channel',
+    'Vehicle Notifications',
+    channelDescription: 'Notifications when vehicle is plugged in',
+    importance: Importance.max,
+    priority: Priority.high,
+    icon: '@mipmap/ic_launcher',
+  );
+  
+  const NotificationDetails platformChannelSpecifics =
+      NotificationDetails(android: androidPlatformChannelSpecifics);
+  
+  await flutterLocalNotificationsPlugin.show(
+    0,
+    'Fahrzeug eingesteckt!',
+    'Ihr Fahrzeug wurde erkannt und kann geladen werden.',
+    platformChannelSpecifics,
+  );
+}
 
 /// Brandfarben – Kolibri (Orange als Primär, Petrol als Akzent)
 class Brand {
@@ -92,6 +236,8 @@ class _WebShellState extends State<WebShell> {
   bool _loading = true;
   bool _showStartMenu = true;
   bool _didAutoLogin = false;
+  bool _vehiclePluggedIn = false;
+  Timer? _vehicleMonitoringTimer;
 
   @override
   void initState() {
@@ -102,7 +248,62 @@ class _WebShellState extends State<WebShell> {
     Future.microtask(() async {
       await _restoreCookies();
       await _main.loadRequest(Uri.parse(startVehicleUrl));
+      _startVehicleMonitoring();
     });
+  }
+
+  @override
+  void dispose() {
+    _vehicleMonitoringTimer?.cancel();
+    super.dispose();
+  }
+
+  // ---------- Vehicle Monitoring ----------
+  void _startVehicleMonitoring() {
+    _vehicleMonitoringTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      _checkVehicleStatus();
+    });
+  }
+
+  Future<void> _checkVehicleStatus() async {
+    try {
+      final isPluggedIn = await checkVehiclePluggedIn(_main);
+      
+      // Nur Benachrichtigung senden wenn Status sich geändert hat
+      if (isPluggedIn && !_vehiclePluggedIn) {
+        _vehiclePluggedIn = true;
+        await _showVehicleNotification();
+        print('🚗 Fahrzeug erkannt! Benachrichtigung gesendet.');
+      } else if (!isPluggedIn && _vehiclePluggedIn) {
+        _vehiclePluggedIn = false;
+        print('🚗 Fahrzeug getrennt.');
+        // Optional: Benachrichtigung für "Fahrzeug getrennt"
+      }
+    } catch (e) {
+      print('Fehler beim Überwachen des Fahrzeugstatus: $e');
+    }
+  }
+
+  Future<void> _showVehicleNotification() async {
+    const AndroidNotificationDetails androidPlatformChannelSpecifics =
+        AndroidNotificationDetails(
+      'vehicle_channel',
+      'Vehicle Notifications',
+      channelDescription: 'Notifications when vehicle is plugged in',
+      importance: Importance.max,
+      priority: Priority.high,
+      icon: '@mipmap/ic_launcher',
+    );
+    
+    const NotificationDetails platformChannelSpecifics =
+        NotificationDetails(android: androidPlatformChannelSpecifics);
+    
+    await flutterLocalNotificationsPlugin.show(
+      DateTime.now().millisecondsSinceEpoch.remainder(100000),
+      '🚗 Fahrzeug eingesteckt!',
+      'Ihr Fahrzeug wurde erkannt und kann geladen werden.',
+      platformChannelSpecifics,
+    );
   }
 
   // ---------- Controller ----------
@@ -380,7 +581,7 @@ class _WebShellState extends State<WebShell> {
                 // Versuche selectedItem zu setzen
                 try{ 
                   inst.option('selectedItem', item); 
-                  var sel = inst.option('selectedItem');
+                var sel = inst.option('selectedItem');
                   if (sel===item) { 
                     try{ inst.option('opened', false);}catch(e){} 
                     return 'set_selectedItem_success';
@@ -391,10 +592,10 @@ class _WebShellState extends State<WebShell> {
                 var valueExpr = inst.option('valueExpr');
                 if (typeof valueExpr==='string' && item && item[valueExpr] !== undefined){
                   try{
-                    inst.option('value', item[valueExpr]);
+                  inst.option('value', item[valueExpr]);
                     var val = inst.option('value');
                     if (val === item[valueExpr]) {
-                      try{ inst.option('opened', false);}catch(e){}
+                  try{ inst.option('opened', false);}catch(e){}
                       return 'set_valueExpr_success';
                     }
                   }catch(e){}
@@ -411,9 +612,9 @@ class _WebShellState extends State<WebShell> {
           
           // Warten kurz bis Popup geöffnet ist
           setTimeout(function(){
-            var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item');
-            if(nodes.length>idx){
-              nodes[idx].click();
+          var nodes = root.querySelectorAll('.dx-selectbox-popup .dx-list-items .dx-item');
+          if(nodes.length>idx){
+            nodes[idx].click();
               // Verifikation: Prüfe ob Auswahl korrekt ist
               setTimeout(function(){
                 var selectedText = root.querySelector('.dx-selectbox .dx-texteditor-input')?.value || '';
@@ -499,7 +700,7 @@ class _WebShellState extends State<WebShell> {
     // 1 Fahrzeug -> direkt wählen und sofort Laden-Sheet
     if (vehicles.length == 1) {
       await _selectVehicle(vehicles.first);
-      await Future.delayed(const Duration(milliseconds: 250));
+      await Future.delayed(const Duration(milliseconds: 1000)); // Mehr Zeit für Datenaktualisierung
       if (!mounted) return;
       _openChargingSheet();
       return;
@@ -527,7 +728,7 @@ class _WebShellState extends State<WebShell> {
       if (!mounted) return;
       if (chosen != null) {
         await _selectVehicle(chosen);
-        await Future.delayed(const Duration(milliseconds: 250));
+        await Future.delayed(const Duration(milliseconds: 1000)); // Mehr Zeit für Datenaktualisierung
         _openChargingSheet();
       } else {
         // abgebrochen -> Startmenü wieder zeigen
@@ -663,6 +864,23 @@ class _WebShellState extends State<WebShell> {
                 await _openAuto();
               } else if (v == 'creds') {
                 await _openCredentials();
+              } else if (v == 'test_notification') {
+                await _showVehicleNotification();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Test-Benachrichtigung gesendet!')),
+                  );
+                }
+              } else if (v == 'check_status') {
+                final isPluggedIn = await checkVehiclePluggedIn(_main);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Fahrzeug Status: ${isPluggedIn ? "Eingesteckt" : "Nicht eingesteckt"}'),
+                      duration: const Duration(seconds: 3),
+                    ),
+                  );
+                }
               } else if (v == 'logout') {
                 await storage.delete(key: _kUser);
                 await storage.delete(key: _kPass);
@@ -687,6 +905,8 @@ class _WebShellState extends State<WebShell> {
               PopupMenuItem(value: 'views', child: Text('Zu Ansichten')),
               PopupMenuItem(value: 'vehicle', child: Text('Zu Fahrzeuge')),
               PopupMenuItem(value: 'creds', child: Text('Login speichern/ändern')),
+              PopupMenuItem(value: 'test_notification', child: Text('Test Benachrichtigung')),
+              PopupMenuItem(value: 'check_status', child: Text('Status prüfen')),
               PopupMenuItem(value: 'logout', child: Text('Abmelden')),
             ],
           ),
@@ -709,8 +929,49 @@ class _WebShellState extends State<WebShell> {
               label: const Text('Start'),
             ),
       bottomSheet: _showStartMenu
-          ? StartMenu(
+          ? DraggableScrollableSheet(
+              initialChildSize: 0.25,
+              minChildSize: 0.1,
+              maxChildSize: 0.4,
+              snap: true,
+              snapSizes: const [0.1, 0.25],
+              builder: (context, scrollController) {
+                return NotificationListener<DraggableScrollableNotification>(
+                  onNotification: (notification) {
+                    // Wenn das Sheet sehr klein wird, schließen wir es
+                    if (notification.extent <= 0.15) {
+                      setState(() => _showStartMenu = false);
+                    }
+                    return true;
+                  },
+                  child: Container(
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                    ),
+                    child: Column(
+                      children: [
+                        // Handle zum Ziehen
+                        Container(
+                          margin: const EdgeInsets.only(top: 12),
+                          width: 42,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: Colors.black12,
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                        // StartMenu Inhalt
+                        Expanded(
+                          child: StartMenu(
               onAuto: _openAuto,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
             )
           : null,
     );
@@ -992,7 +1253,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
   int _currentPage = 0;
   double _chargePercentage = 80.0; // Standard 80%
   bool _busy = false;
-  
+
   // Quick Charge Daten
   int _currentRange = 0;
   int _maxRange = 0;
@@ -1004,16 +1265,48 @@ class _ChargingSheetState extends State<ChargingSheet> {
     _loadVehicleData();
   }
 
+  // Funktion um Daten neu zu laden (wird aufgerufen wenn Fahrzeug gewechselt wird)
+  void refreshVehicleData() {
+    _loadVehicleData();
+  }
+
   Future<void> _loadVehicleData() async {
     // Daten aus der WebView sammeln
     try {
+      // Warten kurz, damit die Seite vollständig geladen ist
+      await Future.delayed(const Duration(milliseconds: 500));
+      
       // Current Range aus VehicleAppointments sammeln
       final currentRangeJs = '''
         (function(){
-          var input = document.querySelector('input[name="CurrentRange"]');
-          if (input) {
-            return parseInt(input.value) || 0;
+          // Verschiedene Selektoren versuchen
+          var selectors = [
+            'input[name="CurrentRange"]',
+            'input[id*="CurrentRange"]',
+            '.dx-numberbox input[aria-valuenow]',
+            'input[aria-valuenow]'
+          ];
+          
+          for (var i = 0; i < selectors.length; i++) {
+            var input = document.querySelector(selectors[i]);
+            if (input) {
+              var value = input.value || input.getAttribute('aria-valuenow') || input.getAttribute('value');
+              if (value) {
+                return parseInt(value) || 0;
+              }
+            }
           }
+          
+          // Fallback: Suche nach Text mit "km" oder Zahlen
+          var textElements = document.querySelectorAll('*');
+          for (var i = 0; i < textElements.length; i++) {
+            var text = textElements[i].textContent || '';
+            if (text.match(/\\d+\\s*km/i)) {
+              var match = text.match(/(\\d+)/);
+              if (match) return parseInt(match[1]);
+            }
+          }
+          
           return 0;
         })();
       ''';
@@ -1021,27 +1314,57 @@ class _ChargingSheetState extends State<ChargingSheet> {
       // Max Range aus Settings/VehiclesConfig sammeln
       final maxRangeJs = '''
         (function(){
-          var input = document.querySelector('input[name="DistanceMax"]');
-          if (input) {
-            return parseInt(input.value) || 0;
+          // Verschiedene Selektoren versuchen
+          var selectors = [
+            'input[name="DistanceMax"]',
+            'input[id*="DistanceMax"]',
+            'input[id*="Max"]',
+            '.dx-numberbox input[aria-valuenow]'
+          ];
+          
+          for (var i = 0; i < selectors.length; i++) {
+            var input = document.querySelector(selectors[i]);
+            if (input) {
+              var value = input.value || input.getAttribute('aria-valuenow') || input.getAttribute('value');
+              if (value) {
+                return parseInt(value) || 0;
+              }
+            }
           }
+          
           return 0;
         })();
       ''';
       
+      print('Lade Fahrzeugdaten...');
       final currentRangeResult = await widget.webViewController.runJavaScriptReturningResult(currentRangeJs);
       final maxRangeResult = await widget.webViewController.runJavaScriptReturningResult(maxRangeJs);
       
-      final currentRange = int.tryParse(currentRangeResult.toString()) ?? 184;
-      final maxRange = int.tryParse(maxRangeResult.toString()) ?? 455;
+      print('Current Range Result: $currentRangeResult');
+      print('Max Range Result: $maxRangeResult');
       
-      setState(() {
-        _currentRange = currentRange;
-        _maxRange = maxRange;
-      });
+      final currentRange = int.tryParse(currentRangeResult.toString()) ?? 0;
+      final maxRange = int.tryParse(maxRangeResult.toString()) ?? 0;
+      
+      // Nur setzen wenn wir echte Werte haben
+      if (currentRange > 0 && maxRange > 0) {
+        setState(() {
+          _currentRange = currentRange;
+          _maxRange = maxRange;
+        });
+        print('Fahrzeugdaten geladen: Current: $currentRange km, Max: $maxRange km');
+      } else {
+        // Fallback zu realistischen Testwerten
+        setState(() {
+          _currentRange = 184;
+          _maxRange = 455;
+        });
+        print('Fallback zu Testwerten: Current: 184 km, Max: 455 km');
+      }
       
       _calculateQuickCharge();
     } catch (e) {
+      print('Fehler beim Laden der Fahrzeugdaten: $e');
       // Fallback zu Testwerten
       setState(() {
         _currentRange = 184;
@@ -1289,12 +1612,30 @@ class _ChargingSheetState extends State<ChargingSheet> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Quick Charge',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Quick Charge',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              IconButton(
+                onPressed: () {
+                  _loadVehicleData();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Fahrzeugdaten werden neu geladen...'),
+                      duration: Duration(seconds: 1),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Daten neu laden',
+              ),
+            ],
           ),
           const SizedBox(height: 24),
           
@@ -1385,13 +1726,13 @@ class _ChargingSheetState extends State<ChargingSheet> {
                     backgroundColor: Brand.primary,
                   ),
                 );
-              },
-              icon: const Icon(Icons.flash_on),
+                  },
+            icon: const Icon(Icons.flash_on),
               label: Text(_busy ? 'Berechne...' : 'Quick Charge'),
               style: FilledButton.styleFrom(
                 backgroundColor: Brand.primary,
                 padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
+          ),
             ),
           ),
         ],

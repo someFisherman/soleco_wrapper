@@ -6,7 +6,7 @@ workflows:
       flutter: stable
       xcode: latest
       groups:
-        - appstore_connect           # MUSS enthalten: APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_PRIVATE_KEY, CERTIFICATE_PRIVATE_KEY
+        - appstore_connect           # enthält: APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_PRIVATE_KEY, (optional) CERTIFICATE_PRIVATE_KEY
       vars:
         BUNDLE_ID: ch.soleco.optimizer
         EXPORT_METHOD: app-store     # "app-store" für TestFlight, alternativ "ad-hoc"
@@ -43,37 +43,42 @@ workflows:
           sed -i.bak -E "s/PRODUCT_BUNDLE_IDENTIFIER = [^;]+;/PRODUCT_BUNDLE_IDENTIFIER = ${BUNDLE_ID};/g" ios/Runner.xcodeproj/project.pbxproj
 
       - name: 🔑 Fetch signing files (automatic)
-  script: |
-    set -euxo pipefail
-    test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER}"
-    test -n "${APP_STORE_CONNECT_ISSUER_ID}"
-    test -n "${APP_STORE_CONNECT_PRIVATE_KEY}"
+        script: |
+          set -euxo pipefail
+          # Prüfen, dass die App Store Connect Secrets da sind
+          test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER}"
+          test -n "${APP_STORE_CONNECT_ISSUER_ID}"
+          test -n "${APP_STORE_CONNECT_PRIVATE_KEY}"
 
-    keychain initialize
+          keychain initialize
 
-    if [ "$EXPORT_METHOD" = "ad-hoc" ]; then
-      SIGNING_TYPE="IOS_APP_ADHOC"
-    else
-      SIGNING_TYPE="IOS_APP_STORE"
-    fi
+          # Export-Typ wählen (App Store / Ad-Hoc)
+          if [ "$EXPORT_METHOD" = "ad-hoc" ]; then
+            SIGNING_TYPE="IOS_APP_ADHOC"
+          else
+            SIGNING_TYPE="IOS_APP_STORE"
+          fi
 
-    # Nur übergeben, wenn vorhanden
-    CERT_ARG=()
-    if [ -n "${CERTIFICATE_PRIVATE_KEY:-}" ]; then
-      CERT_ARG=(--certificate-key "$CERTIFICATE_PRIVATE_KEY")
-    fi
+          # Optional: Falls du ein neues Distribution-Zertifikat erzeugen lassen willst,
+          # kann (und sollte) CERTIFICATE_PRIVATE_KEY gesetzt sein (PEM, BEGIN/END ...).
+          CERT_ARG=()
+          if [ -n "${CERTIFICATE_PRIVATE_KEY:-}" ]; then
+            CERT_ARG=(--certificate-key "$CERTIFICATE_PRIVATE_KEY")
+          fi
 
-    app-store-connect fetch-signing-files \
-      --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
-      --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
-      --private-key "$APP_STORE_CONNECT_PRIVATE_KEY" \
-      --type "$SIGNING_TYPE" \
-      --create \
-      "${CERT_ARG[@]}" \
-      "$BUNDLE_ID"
+          # Diese CLI-Version erwartet API-Flags und die Bundle-ID als POSITIONALES Argument
+          app-store-connect fetch-signing-files \
+            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+            --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+            --private-key "$APP_STORE_CONNECT_PRIVATE_KEY" \
+            --type "$SIGNING_TYPE" \
+            --create \
+            "${CERT_ARG[@]}" \
+            "$BUNDLE_ID"
 
-    keychain add-certificates
-    xcode-project use-profiles
+          # Zertifikate importieren & Profile im Xcode-Projekt setzen
+          keychain add-certificates
+          xcode-project use-profiles
 
       - name: Build signed IPA (Release)
         script: |

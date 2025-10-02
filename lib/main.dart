@@ -818,6 +818,11 @@ class _WebShellState extends State<WebShell> {
             SnackBar(content: Text('Sofortladung gestartet (${minutes} min)')),
           );
         },
+        onVehicleChanged: () async {
+          // Warte kurz damit die WebView-Daten aktualisiert werden
+          await Future.delayed(const Duration(milliseconds: 1500));
+          print('🔄 Vehicle changed - data should be refreshed');
+        },
       ),
     );
   }
@@ -1274,11 +1279,13 @@ class ChargingSheet extends StatefulWidget {
   final int defaultMinutes;
   final WebViewController webViewController;
   final Future<void> Function(int minutes) onStart;
+  final Future<void> Function()? onVehicleChanged;
   const ChargingSheet({
     super.key,
     required this.defaultMinutes,
     required this.webViewController,
     required this.onStart,
+    this.onVehicleChanged,
   });
 
   @override
@@ -1299,7 +1306,15 @@ class _ChargingSheetState extends State<ChargingSheet> {
   @override
   void initState() {
     super.initState();
+    // Lade Daten sofort und dann nochmal nach kurzer Verzögerung
     _loadVehicleData();
+    // Zusätzlicher Versuch nach 3 Sekunden für den Fall dass die WebView-Daten noch nicht aktualisiert sind
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) {
+        print('🔄 Auto-refreshing vehicle data after 3 seconds...');
+        _loadVehicleData();
+      }
+    });
   }
 
   // Funktion um Daten neu zu laden (wird aufgerufen wenn Fahrzeug gewechselt wird)
@@ -1307,10 +1322,20 @@ class _ChargingSheetState extends State<ChargingSheet> {
     _loadVehicleData();
   }
 
+  // Erweiterte Funktion um Daten nach Fahrzeugwechsel zu laden
+  Future<void> refreshVehicleDataAfterSelection() async {
+    print('🔄 Refreshing vehicle data after selection...');
+    // Warte länger damit die WebView-Daten vollständig aktualisiert sind
+    await Future.delayed(const Duration(milliseconds: 2000));
+    await _loadVehicleData();
+  }
+
   Future<void> _loadVehicleData() async {
     // Daten aus der WebView sammeln
     try {
       setState(() => _busy = true);
+      
+      print('🔄 Loading vehicle data...');
       
       // Warten kurz, damit die Seite vollständig geladen ist
       await Future.delayed(const Duration(milliseconds: 500));
@@ -1319,6 +1344,17 @@ class _ChargingSheetState extends State<ChargingSheet> {
       final currentRangeJs = '''
         (function(){
           console.log('🔍 Searching for current range...');
+          
+          // Zuerst: Aktuell ausgewähltes Fahrzeug ermitteln
+          var selectedVehicle = '';
+          var vehicleSelection = document.getElementById('vehicleSelection');
+          if (vehicleSelection) {
+            var input = vehicleSelection.querySelector('.dx-texteditor-input');
+            if (input) {
+              selectedVehicle = input.value || '';
+              console.log('🚗 Currently selected vehicle: ' + selectedVehicle);
+            }
+          }
           
           // Methode 1: Direkte Input-Felder
           var selectors = [
@@ -1379,6 +1415,17 @@ class _ChargingSheetState extends State<ChargingSheet> {
       final maxRangeJs = '''
         (function(){
           console.log('🔍 Searching for max range...');
+          
+          // Zuerst: Aktuell ausgewähltes Fahrzeug ermitteln
+          var selectedVehicle = '';
+          var vehicleSelection = document.getElementById('vehicleSelection');
+          if (vehicleSelection) {
+            var input = vehicleSelection.querySelector('.dx-texteditor-input');
+            if (input) {
+              selectedVehicle = input.value || '';
+              console.log('🚗 Currently selected vehicle for max range: ' + selectedVehicle);
+            }
+          }
           
           // Methode 1: Direkte Input-Felder
           var selectors = [
@@ -1453,6 +1500,17 @@ class _ChargingSheetState extends State<ChargingSheet> {
           _maxRange = maxRange;
         });
         print('✅ Echte Fahrzeugdaten geladen: Current: $currentRange km, Max: $maxRange km');
+        
+        // Zeige Erfolgs-Snackbar
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Fahrzeugdaten geladen: ${currentRange}km / ${maxRange}km'),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 2),
+            ),
+          );
+        }
       } else {
         // Fallback zu realistischen Testwerten
         setState(() {
@@ -1460,6 +1518,17 @@ class _ChargingSheetState extends State<ChargingSheet> {
           _maxRange = 455;
         });
         print('⚠️ Fallback zu Testwerten: Current: 184 km, Max: 455 km');
+        
+        // Zeige Warnung
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('⚠️ Testwerte verwendet - echte Daten nicht gefunden'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
       }
       
       _calculateQuickCharge();
@@ -1726,14 +1795,16 @@ class _ChargingSheetState extends State<ChargingSheet> {
                 ),
               ),
               IconButton(
-                onPressed: () {
-                  _loadVehicleData();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Fahrzeugdaten werden neu geladen...'),
-                      duration: Duration(seconds: 1),
-                    ),
-                  );
+                onPressed: () async {
+                  await refreshVehicleDataAfterSelection();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Fahrzeugdaten wurden neu geladen'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }
                 },
                 icon: const Icon(Icons.refresh),
                 tooltip: 'Daten neu laden',

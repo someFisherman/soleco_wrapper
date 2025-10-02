@@ -6,7 +6,10 @@ workflows:
       flutter: stable
       xcode: latest
       groups:
-        - appstore_connect   # APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_PRIVATE_KEY, (optional) CERTIFICATE_PRIVATE_KEY
+        # Muss enthalten:
+        # APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID,
+        # APP_STORE_CONNECT_PRIVATE_KEY, (optional) CERTIFICATE_PRIVATE_KEY
+        - appstore_connect
       vars:
         BUNDLE_ID: ch.soleco.optimizer
         EXPORT_METHOD: app-store   # "app-store" (TestFlight) oder "ad-hoc"
@@ -76,21 +79,16 @@ workflows:
           fi
 
           keychain add-certificates
-          xcode-project use-profiles   # setzt MANUAL signing + PROVISIONING_PROFILE_SPECIFIER
+          xcode-project use-profiles   # setzt manuelles Signing & Profile im Projekt
 
-      # --- Build & Archive (MANUAL, kein Automatic-Override mehr!) ---
+      # --- Build & Archive (Release) OHNE Arrays/Overrides ---
       - name: Build & Archive (Release)
         script: |
           set -euxo pipefail
           flutter clean
           flutter build ios --release   # wärmt Pods/Settings vor
 
-          # Wenn TEAM_ID gesetzt ist, geben wir sie mit; ansonsten lässt es Xcode auf den Profiles laufen
-          EXTRA_SIGN_ARGS=()
-          if [ -n "${TEAM_ID:-}" ]; then
-            EXTRA_SIGN_ARGS+=(DEVELOPMENT_TEAM="$TEAM_ID")
-          fi
-
+          # Archiv mit den von 'use-profiles' gesetzten Profilen (kein CODE_SIGN_STYLE-Override)
           xcodebuild \
             -workspace ios/Runner.xcworkspace \
             -scheme Runner \
@@ -98,9 +96,7 @@ workflows:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -archivePath build/ios/archive/Runner.xcarchive \
-            archive \
-            CODE_SIGN_STYLE=Manual \
-            "${EXTRA_SIGN_ARGS[@]}"
+            archive
 
       - name: Export IPA (Release)
         script: |

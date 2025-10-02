@@ -976,15 +976,12 @@ class _WebShellState extends State<WebShell> {
       ),
       floatingActionButton: _showStartMenu
           ? null
-          : Container(
-              margin: const EdgeInsets.only(bottom: 100), // Höher positionieren
-              child: FloatingActionButton.extended(
+          : FloatingActionButton.extended(
               onPressed: () => setState(() => _showStartMenu = true),
               backgroundColor: Brand.primary,
               foregroundColor: Colors.white,
               icon: const Icon(Icons.home),
               label: const Text('Start'),
-              ),
             ),
       bottomSheet: _showStartMenu
           ? Container(
@@ -1302,6 +1299,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
   int _currentRange = 0;
   int _maxRange = 0;
   int _calculatedMinutes = 0;
+  bool _hasRealData = false;
 
   @override
   void initState() {
@@ -1331,213 +1329,147 @@ class _ChargingSheetState extends State<ChargingSheet> {
   }
 
   Future<void> _loadVehicleData() async {
-    // Daten aus der WebView sammeln
+    // Daten aus der Views-Seite sammeln
     try {
       setState(() => _busy = true);
       
-      print('🔄 Loading vehicle data...');
+      print('🔄 Loading vehicle data from Views page...');
       
       // Warten kurz, damit die Seite vollständig geladen ist
       await Future.delayed(const Duration(milliseconds: 500));
       
-      // Current Range aus VehicleAppointments sammeln - erweiterte Suche
-      final currentRangeJs = '''
+      // JavaScript um Daten von der Views-Seite zu extrahieren
+      final viewsDataJs = '''
         (function(){
-          console.log('🔍 Searching for current range...');
+          console.log('🔍 Searching for vehicle data on Views page...');
           
-          // Zuerst: Aktuell ausgewähltes Fahrzeug ermitteln
-          var selectedVehicle = '';
-          var vehicleSelection = document.getElementById('vehicleSelection');
-          if (vehicleSelection) {
-            var input = vehicleSelection.querySelector('.dx-texteditor-input');
-            if (input) {
-              selectedVehicle = input.value || '';
-              console.log('🚗 Currently selected vehicle: ' + selectedVehicle);
+          // Suche nach den spezifischen SVG-Text-Elementen
+          var currentRange = null;
+          var maxRange = null;
+          
+          // Suche nach SVG-Text-Elementen mit km-Werten
+          var svgTexts = document.querySelectorAll('text[id*="text860"], text[id*="tspan858"]');
+          console.log('Found ' + svgTexts.length + ' SVG text elements');
+          
+          for (var i = 0; i < svgTexts.length; i++) {
+            var text = svgTexts[i].textContent.trim();
+            console.log('SVG text content: "' + text + '"');
+            
+            // Suche nach km-Werten
+            var match = text.match(/(\d+)\s*km/i);
+            if (match) {
+              var value = parseInt(match[1]);
+              console.log('Found km value: ' + value);
+              
+              // Erste gefundene Zahl ist wahrscheinlich current range (kleinere Zahl)
+              if (currentRange === null && value > 50 && value < 500) {
+                currentRange = value;
+                console.log('✅ Current Range: ' + currentRange + ' km');
+              }
+              // Zweite gefundene Zahl ist wahrscheinlich max range (größere Zahl)
+              else if (maxRange === null && value > 200 && value < 1000) {
+                maxRange = value;
+                console.log('✅ Max Range: ' + maxRange + ' km');
+              }
             }
           }
           
-          // Methode 1: Direkte Input-Felder
-          var selectors = [
-            'input[name="CurrentRange"]',
-            'input[id*="CurrentRange"]',
-            'input[aria-valuenow]',
-            '.dx-numberbox input[value]',
-            'input[type="text"][readonly]',
-            'input[type="hidden"][name="CurrentRange"]'
-          ];
-          
-          for (var i = 0; i < selectors.length; i++) {
-            var inputs = document.querySelectorAll(selectors[i]);
-            console.log('Selector ' + selectors[i] + ' found ' + inputs.length + ' elements');
-            for (var j = 0; j < inputs.length; j++) {
-              var input = inputs[j];
-              var value = input.value || input.getAttribute('aria-valuenow') || input.getAttribute('value');
-              if (value && !isNaN(parseInt(value))) {
-                var num = parseInt(value);
-                if (num > 0 && num < 1000) { // Realistische Range
-                  console.log('✅ Current Range gefunden: ' + num + ' with selector: ' + selectors[i]);
-                  return num;
+          // Fallback: Suche nach allen Text-Elementen mit km
+          if (currentRange === null || maxRange === null) {
+            var allTexts = document.querySelectorAll('text, span, div, p');
+            for (var i = 0; i < allTexts.length; i++) {
+              var text = allTexts[i].textContent.trim();
+              var match = text.match(/(\d+)\s*km/i);
+              if (match) {
+                var value = parseInt(match[1]);
+                if (currentRange === null && value > 50 && value < 500) {
+                  currentRange = value;
+                  console.log('✅ Current Range (fallback): ' + currentRange + ' km');
+                } else if (maxRange === null && value > 200 && value < 1000) {
+                  maxRange = value;
+                  console.log('✅ Max Range (fallback): ' + maxRange + ' km');
                 }
               }
             }
           }
           
-          // Methode 2: Suche nach Zahlen in der Nähe von "km" Text
-          var allElements = document.querySelectorAll('*');
-          for (var i = 0; i < allElements.length; i++) {
-            var text = allElements[i].textContent || '';
-            var match = text.match(/(\d+)\s*km/i);
-            if (match && parseInt(match[1]) > 50 && parseInt(match[1]) < 1000) {
-              console.log('✅ Current Range aus Text gefunden: ' + match[1]);
-              return parseInt(match[1]);
-            }
+          // Rückgabe der gefundenen Werte
+          if (currentRange && maxRange) {
+            console.log('✅ Both values found: Current=' + currentRange + ', Max=' + maxRange);
+            return JSON.stringify({current: currentRange, max: maxRange, success: true});
+          } else {
+            console.log('❌ Missing data: Current=' + currentRange + ', Max=' + maxRange);
+            return JSON.stringify({current: currentRange, max: maxRange, success: false});
           }
-          
-          // Methode 3: Suche nach DevExtreme-Werten
-          var dxElements = document.querySelectorAll('.dx-numberbox, .dx-textbox');
-          for (var i = 0; i < dxElements.length; i++) {
-            var input = dxElements[i].querySelector('input');
-            if (input) {
-              var val = input.value || input.getAttribute('value');
-              if (val && !isNaN(parseInt(val)) && parseInt(val) > 0 && parseInt(val) < 1000) {
-                console.log('✅ Current Range via DevExtreme: ' + val);
-                return parseInt(val);
-              }
-            }
-          }
-          
-          console.log('❌ No current range found');
-          return null;
         })();
       ''';
       
-      // Max Range aus Settings/VehiclesConfig sammeln - erweiterte Suche
-      final maxRangeJs = '''
-        (function(){
-          console.log('🔍 Searching for max range...');
-          
-          // Zuerst: Aktuell ausgewähltes Fahrzeug ermitteln
-          var selectedVehicle = '';
-          var vehicleSelection = document.getElementById('vehicleSelection');
-          if (vehicleSelection) {
-            var input = vehicleSelection.querySelector('.dx-texteditor-input');
-            if (input) {
-              selectedVehicle = input.value || '';
-              console.log('🚗 Currently selected vehicle for max range: ' + selectedVehicle);
-            }
-          }
-          
-          // Methode 1: Direkte Input-Felder
-          var selectors = [
-            'input[name="DistanceMax"]',
-            'input[id*="DistanceMax"]',
-            'input[id*="Max"]',
-            'input[aria-valuemax]',
-            '.dx-numberbox input[value]',
-            'input[type="text"][readonly]',
-            'input[type="hidden"][name="DistanceMax"]'
-          ];
-          
-          for (var i = 0; i < selectors.length; i++) {
-            var inputs = document.querySelectorAll(selectors[i]);
-            console.log('Selector ' + selectors[i] + ' found ' + inputs.length + ' elements');
-            for (var j = 0; j < inputs.length; j++) {
-              var input = inputs[j];
-              var value = input.value || input.getAttribute('aria-valuemax') || input.getAttribute('value');
-              if (value && !isNaN(parseInt(value))) {
-                var num = parseInt(value);
-                if (num > 200 && num < 1000) { // Realistische Max Range
-                  console.log('✅ Max Range gefunden: ' + num + ' with selector: ' + selectors[i]);
-                  return num;
-                }
-              }
-            }
-          }
-          
-          // Methode 2: Suche nach größeren Zahlen in der Nähe von "km" Text
-          var allElements = document.querySelectorAll('*');
-          for (var i = 0; i < allElements.length; i++) {
-            var text = allElements[i].textContent || '';
-            var match = text.match(/(\d+)\s*km/i);
-            if (match && parseInt(match[1]) > 200 && parseInt(match[1]) < 1000) {
-              console.log('✅ Max Range aus Text gefunden: ' + match[1]);
-              return parseInt(match[1]);
-            }
-          }
-          
-          // Methode 3: Suche nach DevExtreme-Werten
-          var dxElements = document.querySelectorAll('.dx-numberbox, .dx-textbox');
-          for (var i = 0; i < dxElements.length; i++) {
-            var input = dxElements[i].querySelector('input');
-            if (input) {
-              var val = input.value || input.getAttribute('value');
-              if (val && !isNaN(parseInt(val)) && parseInt(val) > 200 && parseInt(val) < 1000) {
-                console.log('✅ Max Range via DevExtreme: ' + val);
-                return parseInt(val);
-              }
-            }
-          }
-          
-          console.log('❌ No max range found');
-          return null;
-        })();
-      ''';
+      print('🚗 Loading data from Views page...');
+      final result = await widget.webViewController.runJavaScriptReturningResult(viewsDataJs);
       
-      print('🚗 Lade echte Fahrzeugdaten...');
-      final currentRangeResult = await widget.webViewController.runJavaScriptReturningResult(currentRangeJs);
-      final maxRangeResult = await widget.webViewController.runJavaScriptReturningResult(maxRangeJs);
+      print('🚗 Views data result: $result');
       
-      print('🚗 Current Range Result: $currentRangeResult');
-      print('🚗 Max Range Result: $maxRangeResult');
-      
-      final currentRange = int.tryParse(currentRangeResult.toString()) ?? 0;
-      final maxRange = int.tryParse(maxRangeResult.toString()) ?? 0;
-      
-      // Nur setzen wenn wir echte Werte haben
-      if (currentRange > 0 && maxRange > 0) {
-        setState(() {
-          _currentRange = currentRange;
-          _maxRange = maxRange;
-        });
-        print('✅ Echte Fahrzeugdaten geladen: Current: $currentRange km, Max: $maxRange km');
+      try {
+        final resultStr = result.toString();
+        final data = jsonDecode(resultStr) as Map<String, dynamic>;
         
-        // Zeige Erfolgs-Snackbar
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Fahrzeugdaten geladen: ${currentRange}km / ${maxRange}km'),
-              backgroundColor: Colors.green,
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-      } else {
-        // Fallback zu realistischen Testwerten
-        setState(() {
-          _currentRange = 184;
-          _maxRange = 455;
-        });
-        print('⚠️ Fallback zu Testwerten: Current: 184 km, Max: 455 km');
+        final currentRange = data['current'] as int?;
+        final maxRange = data['max'] as int?;
+        final success = data['success'] as bool? ?? false;
         
-        // Zeige Warnung
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('⚠️ Testwerte verwendet - echte Daten nicht gefunden'),
-              backgroundColor: Colors.orange,
-              duration: Duration(seconds: 3),
-            ),
-          );
+        if (success && currentRange != null && maxRange != null && currentRange > 0 && maxRange > 0) {
+          setState(() {
+            _currentRange = currentRange;
+            _maxRange = maxRange;
+            _hasRealData = true;
+          });
+          print('✅ Echte Fahrzeugdaten geladen: Current: $currentRange km, Max: $maxRange km');
+          
+          // Zeige Erfolgs-Snackbar
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Fahrzeugdaten geladen: ${currentRange}km / ${maxRange}km'),
+                backgroundColor: Colors.green,
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+        } else {
+          setState(() {
+            _currentRange = 0;
+            _maxRange = 0;
+            _hasRealData = false;
+          });
+          print('❌ Keine gültigen Fahrzeugdaten gefunden');
+          
+          // Zeige Fehler
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('❌ Keine Fahrzeugdaten gefunden - bitte Views-Seite laden'),
+                backgroundColor: Colors.red,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
         }
+      } catch (e) {
+        print('❌ Error parsing Views data: $e');
+        setState(() {
+          _currentRange = 0;
+          _maxRange = 0;
+          _hasRealData = false;
+        });
       }
       
       _calculateQuickCharge();
     } catch (e) {
       print('❌ Fehler beim Laden der Fahrzeugdaten: $e');
-      // Fallback zu Testwerten
       setState(() {
-        _currentRange = 184;
-        _maxRange = 455;
+        _currentRange = 0;
+        _maxRange = 0;
+        _hasRealData = false;
       });
     } finally {
       setState(() => _busy = false);
@@ -1545,11 +1477,26 @@ class _ChargingSheetState extends State<ChargingSheet> {
   }
 
   void _calculateQuickCharge() {
+    if (!_hasRealData || _currentRange == 0 || _maxRange == 0) {
+      _calculatedMinutes = 0;
+      setState(() {});
+      return;
+    }
+    
     final targetRange = (_maxRange * _chargePercentage / 100).round();
     final rangeToCharge = targetRange - _currentRange;
     
-    // Einfache Berechnung: 1 km = 2 Minuten (kann angepasst werden)
-    _calculatedMinutes = (rangeToCharge * 2).clamp(0, 600);
+    if (rangeToCharge <= 0) {
+      _calculatedMinutes = 0;
+      setState(() {});
+      return;
+    }
+    
+    // 11kW Ladeleistung: 1 km = 1.15 Minuten (basierend auf 11kW)
+    // Plus 1 Minute pro 15 Minuten (wie vom User gewünscht)
+    final baseMinutes = (rangeToCharge * 1.15).round();
+    final extraMinutes = (baseMinutes / 15).round(); // 1 Minute pro 15 Minuten
+    _calculatedMinutes = (baseMinutes + extraMinutes).clamp(0, 600);
     
     setState(() {});
   }
@@ -1848,12 +1795,12 @@ class _ChargingSheetState extends State<ChargingSheet> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  _currentRange == 184 && _maxRange == 455 
-                    ? '⚠️ Testwerte - Daten werden aus WebView geladen...' 
-                    : '✅ Echte Fahrzeugdaten geladen',
+                  _hasRealData 
+                    ? '✅ Echte Fahrzeugdaten geladen' 
+                    : '❌ Keine Daten verfügbar - bitte Views-Seite laden',
                   style: TextStyle(
                     fontSize: 12,
-                    color: _currentRange == 184 && _maxRange == 455 ? Colors.orange : Colors.green,
+                    color: _hasRealData ? Colors.green : Colors.red,
                     fontStyle: FontStyle.italic,
                   ),
                 ),
@@ -1884,6 +1831,10 @@ class _ChargingSheetState extends State<ChargingSheet> {
                     style: const TextStyle(fontSize: 14),
                   ),
                   Text(
+                    'Charging rate: 11kW',
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                  Text(
                     'Estimated time: $_calculatedMinutes minutes',
                     style: const TextStyle(
                       fontSize: 16,
@@ -1902,21 +1853,25 @@ class _ChargingSheetState extends State<ChargingSheet> {
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
-              onPressed: _busy ? null : () {
+              onPressed: (_busy || !_hasRealData || _calculatedMinutes == 0) ? null : () {
                 // Für Test: Nur Berechnung anzeigen
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
-                    content: Text('Quick Charge würde $_calculatedMinutes Minuten laden'),
+                    content: Text('Quick Charge würde $_calculatedMinutes Minuten laden (11kW)'),
                     backgroundColor: Brand.primary,
                   ),
                 );
                   },
             icon: const Icon(Icons.flash_on),
-              label: Text(_busy ? 'Berechne...' : 'Quick Charge'),
+              label: Text(_busy ? 'Berechne...' : 
+                         !_hasRealData ? 'Keine Daten' : 
+                         _calculatedMinutes == 0 ? 'Bereit' : 'Quick Charge'),
               style: FilledButton.styleFrom(
-                backgroundColor: Brand.primary,
+                backgroundColor: (_busy || !_hasRealData || _calculatedMinutes == 0) 
+                    ? Colors.grey 
+                    : Brand.primary,
                 padding: const EdgeInsets.symmetric(vertical: 16),
-          ),
+              ),
             ),
           ),
           const SizedBox(height: 24), // Extra Platz am Ende für Scrollbarkeit

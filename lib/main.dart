@@ -9,7 +9,6 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_cookie_manager/webview_cookie_manager.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:workmanager/workmanager.dart';
 
 // Notification Service
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = 
@@ -18,36 +17,15 @@ final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Initialize notifications
-  await _initializeNotifications();
-  
-  // Initialize background service
-  await Workmanager().initialize(
-    callbackDispatcher,
-    isInDebugMode: false,
-  );
-  
-  // Register periodic task for vehicle monitoring
-  await Workmanager().registerPeriodicTask(
-    "vehicle-monitoring",
-    "vehicleMonitoringTask",
-    frequency: const Duration(minutes: 1),
-  );
+  try {
+    // Initialize notifications
+    await _initializeNotifications();
+  } catch (e) {
+    print('Notification initialization error: $e');
+    // App läuft weiter ohne Notifications
+  }
   
   runApp(const OptimizerApp());
-}
-
-// Background task callback
-@pragma('vm:entry-point')
-void callbackDispatcher() {
-  Workmanager().executeTask((task, inputData) async {
-    switch (task) {
-      case "vehicleMonitoringTask":
-        await _checkVehicleStatus();
-        break;
-    }
-    return Future.value(true);
-  });
 }
 
 // Initialize notifications
@@ -61,26 +39,10 @@ Future<void> _initializeNotifications() async {
   await flutterLocalNotificationsPlugin.initialize(initializationSettings);
 }
 
-// Check vehicle status in background
-Future<void> _checkVehicleStatus() async {
-  // This would check if a vehicle is plugged in
-  // For now, we'll simulate this
-  final isVehiclePlugged = await _simulateVehicleCheck();
-  
-  if (isVehiclePlugged) {
-    await _showVehicleNotification();
-  }
-}
-
-// Check if vehicle is plugged in by monitoring the WebView
+// Simplified vehicle check (removed background service)
 Future<bool> _simulateVehicleCheck() async {
-  try {
-    // This would need access to the WebViewController
-    // For now, we'll implement a simple check
-    return false;
-  } catch (e) {
-    return false;
-  }
+  // Simple check without background service
+  return false;
 }
 
 // Real vehicle detection function (to be called from WebShell)

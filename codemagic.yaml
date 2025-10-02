@@ -6,15 +6,11 @@ workflows:
       flutter: stable
       xcode: latest
       groups:
-        # Muss enthalten:
-        # APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID,
-        # APP_STORE_CONNECT_PRIVATE_KEY, (optional) CERTIFICATE_PRIVATE_KEY
-        - appstore_connect
+        - appstore_connect   # APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_PRIVATE_KEY, (optional) CERTIFICATE_PRIVATE_KEY
       vars:
         BUNDLE_ID: ch.soleco.optimizer
         EXPORT_METHOD: app-store   # "app-store" (TestFlight) oder "ad-hoc"
-        # Optional: TEAM_ID kann gesetzt werden (10-stellig, z. B. ABCDE12345)
-        # TEAM_ID: ABCDE12345
+        # Optional: TEAM_ID: ABCDE12345
 
     cache:
       cache_paths:
@@ -80,17 +76,21 @@ workflows:
           fi
 
           keychain add-certificates
-          xcode-project use-profiles
+          xcode-project use-profiles   # setzt MANUAL signing + PROVISIONING_PROFILE_SPECIFIER
 
-      # --- Build + Archive + Export via xcodebuild (statt flutter build ipa) ---
+      # --- Build & Archive (MANUAL, kein Automatic-Override mehr!) ---
       - name: Build & Archive (Release)
         script: |
           set -euxo pipefail
           flutter clean
-          # (Optional) Release-Build, damit Pods & Settings warm sind
-          flutter build ios --release
+          flutter build ios --release   # wärmt Pods/Settings vor
 
-          # Archiv erstellen (nutzt die via 'use-profiles' gesetzten Profile)
+          # Wenn TEAM_ID gesetzt ist, geben wir sie mit; ansonsten lässt es Xcode auf den Profiles laufen
+          EXTRA_SIGN_ARGS=()
+          if [ -n "${TEAM_ID:-}" ]; then
+            EXTRA_SIGN_ARGS+=(DEVELOPMENT_TEAM="$TEAM_ID")
+          fi
+
           xcodebuild \
             -workspace ios/Runner.xcworkspace \
             -scheme Runner \
@@ -99,19 +99,19 @@ workflows:
             -destination 'generic/platform=iOS' \
             -archivePath build/ios/archive/Runner.xcarchive \
             archive \
-            CODE_SIGN_STYLE=Automatic
+            CODE_SIGN_STYLE=Manual \
+            "${EXTRA_SIGN_ARGS[@]}"
 
       - name: Export IPA (Release)
         script: |
           set -euxo pipefail
-          # exportOptions.plist generieren
           cat > exportOptions.plist <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
             <key>method</key><string>__METHOD__</string>
-            <key>signingStyle</key><string>automatic</string>
+            <key>signingStyle</key><string>manual</string>
             <key>stripSwiftSymbols</key><true/>
             <key>compileBitcode</key><false/>
             <key>destination</key><string>export</string>
@@ -125,7 +125,6 @@ workflows:
             /usr/libexec/PlistBuddy -c "Set :teamID ${TEAM_ID}" exportOptions.plist
           fi
 
-          # Export der IPA
           rm -rf build/ios/ipa
           xcodebuild -exportArchive \
             -archivePath build/ios/archive/Runner.xcarchive \
@@ -147,7 +146,6 @@ workflows:
         key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
         issuer_id: $APP_STORE_CONNECT_ISSUER_ID
         submit_to_testflight: true
-        # Optional: bestimmte Gruppen
         # beta_groups:
         #   - Internal Testers
 

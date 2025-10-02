@@ -34,34 +34,33 @@ workflows:
           sed -i.bak -E "s/PRODUCT_BUNDLE_IDENTIFIER = [^;]+;/PRODUCT_BUNDLE_IDENTIFIER = ${BUNDLE_ID};/g" ios/Runner.xcodeproj/project.pbxproj
 
       - name: 🔑 Fetch signing files (automatic)
-        script: |
-          set -euxo pipefail
-          # Prüfen, ob die Variablen da sind (zeigt keine Secrets an)
-          test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER}" || (echo "Missing APP_STORE_CONNECT_KEY_IDENTIFIER"; exit 1)
-          test -n "${APP_STORE_CONNECT_ISSUER_ID}"    || (echo "Missing APP_STORE_CONNECT_ISSUER_ID"; exit 1)
-          test -n "${APP_STORE_TEAM_ID}"              || (echo "Missing APP_STORE_TEAM_ID"; exit 1)
-          test -n "${APP_STORE_CONNECT_PRIVATE_KEY}"  || (echo "Missing APP_STORE_CONNECT_PRIVATE_KEY"; exit 1)
+  script: |
+    set -euxo pipefail
+    # Sicherstellen, dass die Variablen aus der Gruppe vorhanden sind
+    test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER}"
+    test -n "${APP_STORE_CONNECT_ISSUER_ID}"
+    test -n "${APP_STORE_CONNECT_PRIVATE_KEY}"
+    # (TEAM_ID ist nicht nötig)
 
-          keychain initialize
-          echo "$APP_STORE_CONNECT_PRIVATE_KEY" > /tmp/appstore_key.p8
+    keychain initialize
 
-          if [ "$EXPORT_METHOD" = "ad-hoc" ]; then
-            SIGNING_TYPE="IOS_ADHOC"
-          else
-            SIGNING_TYPE="IOS_APP_STORE"
-          fi
+    # Wahl des Export-Typs
+    if [ "$EXPORT_METHOD" = "ad-hoc" ]; then
+      SIGNING_TYPE="IOS_ADHOC"
+    else
+      SIGNING_TYPE="IOS_APP_STORE"
+    fi
 
-          app-store-connect fetch-signing-files \
-            --api-key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
-            --api-issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
-            --api-private-key-file /tmp/appstore_key.p8 \
-            --type "$SIGNING_TYPE" \
-            --bundle-identifier "$BUNDLE_ID" \
-            --create \
-            --team-id "$APP_STORE_TEAM_ID"
+    # Profile + Zertifikate automatisch erstellen/holen
+    app-store-connect fetch-signing-files \
+      --type "$SIGNING_TYPE" \
+      --bundle-id "$BUNDLE_ID" \
+      --create
 
-          keychain add-certificates
-          xcode-project use-profiles
+    # In Keychain importieren und Xcode-Projekt konfigurieren
+    keychain add-certificates
+    xcode-project use-profiles
+
 
       - name: Build signed IPA (Release)
         script: |

@@ -510,7 +510,7 @@ class _WebShellState extends State<WebShell> {
 
         console.log('🎯 Trying to select vehicle at index: ' + idx);
 
-        // Methode 1: Direkte DevExtreme API
+        // Methode 1: DevExtreme API mit mehreren Versuchen
         try{
           if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst = jQuery(root).dxSelectBox('instance');
@@ -537,31 +537,38 @@ class _WebShellState extends State<WebShell> {
                 var item = arr[idx];
                 console.log('🎯 Selecting item: ' + JSON.stringify(item));
                 
-                // Versuche verschiedene Methoden
+                // Versuche verschiedene Methoden nacheinander
                 try {
-                  // Methode 1: selectedItem
+                  // Methode 1: selectedIndex (oft am zuverlässigsten)
+                  inst.option('selectedIndex', idx);
+                  console.log('✅ Set selectedIndex: ' + idx);
+                  
+                  // Methode 2: selectedItem
                   inst.option('selectedItem', item);
                   console.log('✅ Set selectedItem');
                   
-                  // Methode 2: value
+                  // Methode 3: value
                 var valueExpr = inst.option('valueExpr');
                   if (typeof valueExpr === 'string' && item[valueExpr] !== undefined) {
                   inst.option('value', item[valueExpr]);
                     console.log('✅ Set value: ' + item[valueExpr]);
                   }
                   
-                  // Methode 3: selectedIndex
-                  inst.option('selectedIndex', idx);
-                  console.log('✅ Set selectedIndex: ' + idx);
-                  
                   // Schließe das Dropdown
                   inst.option('opened', false);
                   
-                  // Trigger change event
-                  inst.option('onValueChanged', function(e) {
-                    console.log('🔄 Value changed to: ' + e.value);
-                  });
+                  // Trigger change event manuell
+                  var changeEvent = new Event('change', { bubbles: true });
+                  root.dispatchEvent(changeEvent);
                   
+                  // Zusätzlich: Trigger input event
+                  var inputEvent = new Event('input', { bubbles: true });
+                  var input = root.querySelector('input');
+                  if (input) {
+                    input.dispatchEvent(inputEvent);
+                  }
+                  
+                  console.log('✅ All methods applied');
                   return 'success';
                 } catch(e) {
                   console.log('❌ Error setting selection: ' + e);
@@ -575,7 +582,7 @@ class _WebShellState extends State<WebShell> {
           console.log('❌ DevExtreme method failed: ' + e);
         }
 
-        // Methode 2: DOM Click Simulation
+        // Methode 2: DOM Click Simulation (Fallback)
         try{
           console.log('🖱️ Trying DOM click method');
           
@@ -613,9 +620,9 @@ class _WebShellState extends State<WebShell> {
       print('🚗 Vehicle selection result: $result');
       
       // Warte auf Datenaktualisierung
-      await Future.delayed(const Duration(milliseconds: 3000));
+      await Future.delayed(const Duration(milliseconds: 2000));
       
-      // Verifikation
+      // Verifikation mit mehreren Versuchen
       final verifyJs = '''
         (function(){
           var root = document.getElementById('vehicleSelection');
@@ -630,7 +637,12 @@ class _WebShellState extends State<WebShell> {
               if(inst){
                 var sel = inst.option('selectedItem');
                 var val = inst.option('value');
+                var idx = inst.option('selectedIndex');
                 selectedValue = val || '';
+                
+                console.log('🔍 Verification - selectedItem: ' + JSON.stringify(sel));
+                console.log('🔍 Verification - value: ' + val);
+                console.log('🔍 Verification - selectedIndex: ' + idx);
                 
                 if(sel && typeof sel === 'object'){
                   var displayExpr = inst.option('displayExpr');
@@ -642,7 +654,9 @@ class _WebShellState extends State<WebShell> {
                 }
               }
             }
-          } catch(e) {}
+          } catch(e) {
+            console.log('❌ Error in verification: ' + e);
+          }
           
           if(!selectedText){
             var input = root.querySelector('.dx-texteditor-input');
@@ -669,6 +683,50 @@ class _WebShellState extends State<WebShell> {
     }
   }
 
+  // Debug-Funktion für Fahrzeugauswahl
+  Future<void> _debugVehicleSelection() async {
+    final debugJs = '''
+      (function(){
+        var root = document.getElementById('vehicleSelection');
+        if(!root) {
+          console.log('❌ vehicleSelection element not found');
+          return 'no_element';
+        }
+        
+        console.log('🔍 Debug: vehicleSelection element found');
+        
+        if(window.jQuery && jQuery.fn.dxSelectBox){
+          var inst = jQuery(root).dxSelectBox('instance');
+          if(inst){
+            console.log('✅ DevExtreme instance found');
+            var ds = inst.option('dataSource');
+            var items = inst.option('items');
+            var selectedItem = inst.option('selectedItem');
+            var value = inst.option('value');
+            var selectedIndex = inst.option('selectedIndex');
+            
+            console.log('📋 DataSource: ' + JSON.stringify(ds));
+            console.log('📋 Items: ' + JSON.stringify(items));
+            console.log('📋 Selected Item: ' + JSON.stringify(selectedItem));
+            console.log('📋 Value: ' + value);
+            console.log('📋 Selected Index: ' + selectedIndex);
+            
+            return 'debug_success';
+          }
+        }
+        
+        return 'no_instance';
+      })();
+    ''';
+    
+    try {
+      final result = await _main.runJavaScriptReturningResult(debugJs);
+      print('🔍 Debug result: $result');
+    } catch (e) {
+      print('❌ Debug error: $e');
+    }
+  }
+
   // ---------- Startmenü-Aktion: nur „Auto" ----------
   Future<void> _openAuto() async {
     setState(() => _showStartMenu = false);
@@ -686,8 +744,11 @@ class _WebShellState extends State<WebShell> {
 
     // 1 Fahrzeug -> direkt wählen und sofort Laden-Sheet
     if (vehicles.length == 1) {
+      print('🚗 Auto-selecting vehicle: ${vehicles.first.label}');
+      await _debugVehicleSelection(); // Debug vor Auswahl
       await _selectVehicle(vehicles.first);
-      await Future.delayed(const Duration(milliseconds: 3000)); // Mehr Zeit für Datenaktualisierung
+      await Future.delayed(const Duration(milliseconds: 1000)); // Kurz warten
+      await _debugVehicleSelection(); // Debug nach Auswahl
       if (!mounted) return;
       _openChargingSheet();
       return;
@@ -714,8 +775,11 @@ class _WebShellState extends State<WebShell> {
       );
       if (!mounted) return;
       if (chosen != null) {
+        print('🚗 User selected vehicle: ${chosen.label}');
+        await _debugVehicleSelection(); // Debug vor Auswahl
         await _selectVehicle(chosen);
-        await Future.delayed(const Duration(milliseconds: 2000)); // Mehr Zeit für Datenaktualisierung
+        await Future.delayed(const Duration(milliseconds: 1000)); // Kurz warten
+        await _debugVehicleSelection(); // Debug nach Auswahl
         _openChargingSheet();
       } else {
         // abgebrochen -> Startmenü wieder zeigen
@@ -1246,113 +1310,138 @@ class _ChargingSheetState extends State<ChargingSheet> {
   Future<void> _loadVehicleData() async {
     // Daten aus der WebView sammeln
     try {
-      // Warten kurz, damit die Seite vollständig geladen ist
-      await Future.delayed(const Duration(milliseconds: 1000));
+      setState(() => _busy = true);
       
-      // Current Range aus VehicleAppointments sammeln
+      // Warten kurz, damit die Seite vollständig geladen ist
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      // Current Range aus VehicleAppointments sammeln - erweiterte Suche
       final currentRangeJs = '''
         (function(){
-          // Spezifische Selektoren für Current Range
+          console.log('🔍 Searching for current range...');
+          
+          // Methode 1: Direkte Input-Felder
           var selectors = [
             'input[name="CurrentRange"]',
             'input[id*="CurrentRange"]',
             'input[aria-valuenow]',
             '.dx-numberbox input[value]',
-            'input[type="text"][readonly]'
+            'input[type="text"][readonly]',
+            'input[type="hidden"][name="CurrentRange"]'
           ];
           
           for (var i = 0; i < selectors.length; i++) {
             var inputs = document.querySelectorAll(selectors[i]);
+            console.log('Selector ' + selectors[i] + ' found ' + inputs.length + ' elements');
             for (var j = 0; j < inputs.length; j++) {
               var input = inputs[j];
               var value = input.value || input.getAttribute('aria-valuenow') || input.getAttribute('value');
               if (value && !isNaN(parseInt(value))) {
                 var num = parseInt(value);
                 if (num > 0 && num < 1000) { // Realistische Range
-                  console.log('Current Range gefunden: ' + num);
+                  console.log('✅ Current Range gefunden: ' + num + ' with selector: ' + selectors[i]);
                   return num;
                 }
               }
             }
           }
           
-          // Fallback: Suche nach Zahlen in der Nähe von "km"
+          // Methode 2: Suche nach Zahlen in der Nähe von "km" Text
           var allElements = document.querySelectorAll('*');
           for (var i = 0; i < allElements.length; i++) {
             var text = allElements[i].textContent || '';
-            if (text.includes('km') && text.match(/\\d+/)) {
-              var match = text.match(/(\\d+)/);
-              if (match) {
-                var num = parseInt(match[1]);
-                if (num > 0 && num < 1000) {
-                  console.log('Current Range aus Text gefunden: ' + num);
-                  return num;
-                }
+            var match = text.match(/(\d+)\s*km/i);
+            if (match && parseInt(match[1]) > 50 && parseInt(match[1]) < 1000) {
+              console.log('✅ Current Range aus Text gefunden: ' + match[1]);
+              return parseInt(match[1]);
+            }
+          }
+          
+          // Methode 3: Suche nach DevExtreme-Werten
+          var dxElements = document.querySelectorAll('.dx-numberbox, .dx-textbox');
+          for (var i = 0; i < dxElements.length; i++) {
+            var input = dxElements[i].querySelector('input');
+            if (input) {
+              var val = input.value || input.getAttribute('value');
+              if (val && !isNaN(parseInt(val)) && parseInt(val) > 0 && parseInt(val) < 1000) {
+                console.log('✅ Current Range via DevExtreme: ' + val);
+                return parseInt(val);
               }
             }
           }
           
-          console.log('Kein Current Range gefunden');
-          return 0;
+          console.log('❌ No current range found');
+          return null;
         })();
       ''';
       
-      // Max Range aus Settings/VehiclesConfig sammeln
+      // Max Range aus Settings/VehiclesConfig sammeln - erweiterte Suche
       final maxRangeJs = '''
         (function(){
-          // Spezifische Selektoren für Max Range
+          console.log('🔍 Searching for max range...');
+          
+          // Methode 1: Direkte Input-Felder
           var selectors = [
             'input[name="DistanceMax"]',
             'input[id*="DistanceMax"]',
             'input[id*="Max"]',
-            'input[aria-valuenow]',
-            '.dx-numberbox input[value]'
+            'input[aria-valuemax]',
+            '.dx-numberbox input[value]',
+            'input[type="text"][readonly]',
+            'input[type="hidden"][name="DistanceMax"]'
           ];
           
           for (var i = 0; i < selectors.length; i++) {
             var inputs = document.querySelectorAll(selectors[i]);
+            console.log('Selector ' + selectors[i] + ' found ' + inputs.length + ' elements');
             for (var j = 0; j < inputs.length; j++) {
               var input = inputs[j];
-              var value = input.value || input.getAttribute('aria-valuenow') || input.getAttribute('value');
+              var value = input.value || input.getAttribute('aria-valuemax') || input.getAttribute('value');
               if (value && !isNaN(parseInt(value))) {
                 var num = parseInt(value);
                 if (num > 200 && num < 1000) { // Realistische Max Range
-                  console.log('Max Range gefunden: ' + num);
+                  console.log('✅ Max Range gefunden: ' + num + ' with selector: ' + selectors[i]);
                   return num;
                 }
               }
             }
           }
           
-          // Fallback: Suche nach größeren Zahlen (wahrscheinlich Max Range)
+          // Methode 2: Suche nach größeren Zahlen in der Nähe von "km" Text
           var allElements = document.querySelectorAll('*');
           for (var i = 0; i < allElements.length; i++) {
             var text = allElements[i].textContent || '';
-            if (text.includes('km') && text.match(/\\d+/)) {
-              var matches = text.match(/\\d+/g);
-              if (matches) {
-                for (var k = 0; k < matches.length; k++) {
-                  var num = parseInt(matches[k]);
-                  if (num > 200 && num < 1000) {
-                    console.log('Max Range aus Text gefunden: ' + num);
-                    return num;
-                  }
-                }
+            var match = text.match(/(\d+)\s*km/i);
+            if (match && parseInt(match[1]) > 200 && parseInt(match[1]) < 1000) {
+              console.log('✅ Max Range aus Text gefunden: ' + match[1]);
+              return parseInt(match[1]);
+            }
+          }
+          
+          // Methode 3: Suche nach DevExtreme-Werten
+          var dxElements = document.querySelectorAll('.dx-numberbox, .dx-textbox');
+          for (var i = 0; i < dxElements.length; i++) {
+            var input = dxElements[i].querySelector('input');
+            if (input) {
+              var val = input.value || input.getAttribute('value');
+              if (val && !isNaN(parseInt(val)) && parseInt(val) > 200 && parseInt(val) < 1000) {
+                console.log('✅ Max Range via DevExtreme: ' + val);
+                return parseInt(val);
               }
             }
           }
           
-          console.log('Kein Max Range gefunden');
-          return 0;
+          console.log('❌ No max range found');
+          return null;
         })();
       ''';
       
-      print('Lade echte Fahrzeugdaten...');
+      print('🚗 Lade echte Fahrzeugdaten...');
       final currentRangeResult = await widget.webViewController.runJavaScriptReturningResult(currentRangeJs);
       final maxRangeResult = await widget.webViewController.runJavaScriptReturningResult(maxRangeJs);
       
-      print('Current Range Result: $currentRangeResult');
-      print('Max Range Result: $maxRangeResult');
+      print('🚗 Current Range Result: $currentRangeResult');
+      print('🚗 Max Range Result: $maxRangeResult');
       
       final currentRange = int.tryParse(currentRangeResult.toString()) ?? 0;
       final maxRange = int.tryParse(maxRangeResult.toString()) ?? 0;
@@ -1381,6 +1470,8 @@ class _ChargingSheetState extends State<ChargingSheet> {
         _currentRange = 184;
         _maxRange = 455;
       });
+    } finally {
+      setState(() => _busy = false);
     }
   }
 
@@ -1508,7 +1599,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
   }
 
   Widget _buildPlannedPage() {
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1566,6 +1657,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
               ),
             ),
           ),
+          const SizedBox(height: 24), // Extra Platz am Ende für Scrollbarkeit
         ],
       ),
     );
@@ -1618,7 +1710,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
   }
 
   Widget _buildQuickChargePage() {
-    return Padding(
+    return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1756,6 +1848,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
           ),
             ),
           ),
+          const SizedBox(height: 24), // Extra Platz am Ende für Scrollbarkeit
         ],
       ),
     );

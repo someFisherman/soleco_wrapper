@@ -79,9 +79,9 @@ workflows:
           fi
 
           keychain add-certificates
-          xcode-project use-profiles   # setzt manuelles Signing & Profile im Projekt
+          xcode-project use-profiles   # setzt MANUAL signing + Profile im Xcode-Projekt
 
-      # --- Build & Archive (Release) OHNE Arrays/Overrides ---
+      # --- Build & Archive (Release) ---
       - name: Build & Archive (Release)
         script: |
           set -euxo pipefail
@@ -98,16 +98,29 @@ workflows:
             -archivePath build/ios/archive/Runner.xcarchive \
             archive
 
+      # --- Export IPA (Release) mit explizitem Provisioning Profile ---
       - name: Export IPA (Release)
         script: |
           set -euxo pipefail
-          cat > exportOptions.plist <<'PLIST'
+
+          # Den Profil-Namen aus den Build-Settings ziehen (Release config)
+          PROFILE_NAME="$(xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner -configuration Release -showBuildSettings \
+            | awk -F' = ' '/PROVISIONING_PROFILE_SPECIFIER/ {print $2}' | tail -n1 | sed 's/^[[:space:]]*//')"
+          echo "Gefundenes Provisioning Profile (Release): ${PROFILE_NAME:-<leer>}"
+
+          # exportOptions.plist erzeugen – wenn Profil gefunden: manual + mapping, sonst automatic als Fallback
+          if [ -n "${PROFILE_NAME}" ]; then
+            cat > exportOptions.plist <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-            <key>method</key><string>__METHOD__</string>
+            <key>method</key><string>${EXPORT_METHOD}</string>
             <key>signingStyle</key><string>manual</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key><string>${PROFILE_NAME}</string>
+            </dict>
             <key>stripSwiftSymbols</key><true/>
             <key>compileBitcode</key><false/>
             <key>destination</key><string>export</string>
@@ -115,7 +128,25 @@ workflows:
           </dict>
           </plist>
           PLIST
-          /usr/libexec/PlistBuddy -c "Set :method ${EXPORT_METHOD}" exportOptions.plist
+          else
+            echo "Kein PROVISIONING_PROFILE_SPECIFIER gefunden – Export versucht 'automatic'."
+            cat > exportOptions.plist <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>${EXPORT_METHOD}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+            <key>destination</key><string>export</string>
+            <key>thinning</key><string>&lt;none&gt;</string>
+          </dict>
+          </plist>
+          PLIST
+          fi
+
+          # Optional Team-ID setzen
           if [ -n "${TEAM_ID:-}" ]; then
             /usr/libexec/PlistBuddy -c "Add :teamID string ${TEAM_ID}" exportOptions.plist || \
             /usr/libexec/PlistBuddy -c "Set :teamID ${TEAM_ID}" exportOptions.plist

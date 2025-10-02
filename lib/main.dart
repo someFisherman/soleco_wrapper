@@ -915,11 +915,20 @@ class _ChargingSheetState extends State<ChargingSheet> {
   int _maxRange = 0;
   int _calculatedMinutes = 0;
   bool _hasRealData = false;
+  
+  // TextController für Minuten (wird automatisch gesetzt)
+  late final TextEditingController _minCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _loadVehicleData();
+  }
+
+  @override
+  void dispose() {
+    _minCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadVehicleData() async {
@@ -1045,7 +1054,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
         print('✅ Echte Fahrzeugdaten geladen: Current: $currentRange km (Views), Max: $maxRange km (Settings/VehiclesConfig)');
         
         // Berechne automatisch die Minuten basierend auf 80% Ladung
-        _calculateMinutes();
+        _calculateQuickCharge();
         
         // Zeige Erfolgs-Snackbar
         if (mounted) {
@@ -1089,8 +1098,8 @@ class _ChargingSheetState extends State<ChargingSheet> {
     }
   }
 
-  void _calculateMinutes() {
-    if (!_hasRealData || _currentRange == 0 || _maxRange == 0) {
+  void _calculateQuickCharge() {
+    if (!_hasRealData || _maxRange == 0) {
       _calculatedMinutes = 0;
       return;
     }

@@ -8,8 +8,114 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_cookie_manager/webview_cookie_manager.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-void main() => runApp(const OptimizerApp());
+// Notification Service
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = 
+    FlutterLocalNotificationsPlugin();
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  try {
+    // Initialize notifications
+    await _initializeNotifications();
+  } catch (e) {
+    print('Notification initialization error: $e');
+    // App läuft weiter ohne Notifications
+  }
+  
+  runApp(const OptimizerApp());
+}
+
+// Initialize notifications
+Future<void> _initializeNotifications() async {
+  const AndroidInitializationSettings initializationSettingsAndroid =
+      AndroidInitializationSettings('@mipmap/ic_launcher');
+  
+  const InitializationSettings initializationSettings =
+      InitializationSettings(android: initializationSettingsAndroid);
+  
+  await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+}
+
+// Simplified vehicle check (removed background service)
+Future<bool> _simulateVehicleCheck() async {
+  // Simple check without background service
+  return false;
+}
+
+// Real vehicle detection function (to be called from WebShell)
+Future<bool> checkVehiclePluggedIn(WebViewController controller) async {
+  try {
+    final js = '''
+      (function(){
+        // Check for specific SVG text elements that show vehicle status
+        var statusTexts = [
+          'Home, Ready',
+          'Away',
+          'Charging',
+          'Connected',
+          'Plugged'
+        ];
+        
+        // Look for SVG text elements with specific IDs or content
+        var svgTexts = document.querySelectorAll('text[id*="text860"], text[id*="tspan858"]');
+        
+        for (var i = 0; i < svgTexts.length; i++) {
+          var text = svgTexts[i].textContent.trim();
+          console.log('Found SVG text: "' + text + '"');
+          
+          // Check if text indicates vehicle is plugged in
+          if (text === 'Home, Ready' || text === 'Charging' || text === 'Connected' || text === 'Plugged') {
+            return true;
+          }
+        }
+        
+        // Fallback: Look for any text containing these status indicators
+        var allTexts = document.querySelectorAll('text, span, div, p');
+        for (var i = 0; i < allTexts.length; i++) {
+          var text = allTexts[i].textContent.trim();
+          if (text === 'Home, Ready' || text === 'Charging' || text === 'Connected' || text === 'Plugged') {
+            return true;
+          }
+        }
+        
+        return false;
+      })();
+    ''';
+    
+    final result = await controller.runJavaScriptReturningResult(js);
+    print('Vehicle detection result: $result');
+    return result.toString() == 'true';
+  } catch (e) {
+    print('Error in vehicle detection: $e');
+    return false;
+  }
+}
+
+// Show notification when vehicle is plugged in
+Future<void> _showVehicleNotification() async {
+  const AndroidNotificationDetails androidPlatformChannelSpecifics =
+      AndroidNotificationDetails(
+    'vehicle_channel',
+    'Vehicle Notifications',
+    channelDescription: 'Notifications when vehicle is plugged in',
+    importance: Importance.max,
+    priority: Priority.high,
+    icon: '@mipmap/ic_launcher',
+  );
+  
+  const NotificationDetails platformChannelSpecifics =
+      NotificationDetails(android: androidPlatformChannelSpecifics);
+  
+  await flutterLocalNotificationsPlugin.show(
+    0,
+    'Fahrzeug eingesteckt!',
+    'Ihr Fahrzeug wurde erkannt und kann geladen werden.',
+    platformChannelSpecifics,
+  );
+}
 
 /// Brandfarben – Kolibri (Orange als Primär, Petrol als Akzent)
 class Brand {
@@ -102,7 +208,41 @@ class _WebShellState extends State<WebShell> {
     Future.microtask(() async {
       await _restoreCookies();
       await _main.loadRequest(Uri.parse(startVehicleUrl));
+      // Vehicle monitoring disabled to prevent WebView interference
     });
+  }
+
+  // ---------- Vehicle Monitoring (Disabled to prevent WebView issues) ----------
+  void _startVehicleMonitoring() {
+    // Vehicle monitoring disabled to prevent WebView interference
+    print('Vehicle monitoring disabled to prevent WebView issues');
+  }
+
+  Future<void> _checkVehicleStatus() async {
+    // Vehicle status checking disabled to prevent WebView interference
+    print('Vehicle status checking disabled');
+  }
+
+  Future<void> _showVehicleNotification() async {
+    const AndroidNotificationDetails androidPlatformChannelSpecifics =
+        AndroidNotificationDetails(
+      'vehicle_channel',
+      'Vehicle Notifications',
+      channelDescription: 'Notifications when vehicle is plugged in',
+      importance: Importance.max,
+      priority: Priority.high,
+      icon: '@mipmap/ic_launcher',
+    );
+    
+    const NotificationDetails platformChannelSpecifics =
+        NotificationDetails(android: androidPlatformChannelSpecifics);
+    
+    await flutterLocalNotificationsPlugin.show(
+      DateTime.now().millisecondsSinceEpoch.remainder(100000),
+      '🚗 Fahrzeug eingesteckt!',
+      'Ihr Fahrzeug wurde erkannt und kann geladen werden.',
+      platformChannelSpecifics,
+    );
   }
 
   // ---------- Controller ----------
@@ -411,18 +551,72 @@ class _WebShellState extends State<WebShell> {
     }
   }
 
-  // ---------- Startmenü-Aktion: nur „Auto“ ----------
+  // Debug-Funktion für Fahrzeugauswahl
+  Future<void> _debugVehicleSelection() async {
+    final debugJs = '''
+      (function(){
+        var root = document.getElementById('vehicleSelection');
+        if(!root) {
+          console.log('❌ vehicleSelection element not found');
+          return 'no_element';
+        }
+        
+        console.log('🔍 Debug: vehicleSelection element found');
+        
+        if(window.jQuery && jQuery.fn.dxSelectBox){
+          var inst = jQuery(root).dxSelectBox('instance');
+          if(inst){
+            console.log('✅ DevExtreme instance found');
+            var ds = inst.option('dataSource');
+            var items = inst.option('items');
+            var selectedItem = inst.option('selectedItem');
+            var value = inst.option('value');
+            var selectedIndex = inst.option('selectedIndex');
+            
+            console.log('📋 DataSource: ' + JSON.stringify(ds));
+            console.log('📋 Items: ' + JSON.stringify(items));
+            console.log('📋 Selected Item: ' + JSON.stringify(selectedItem));
+            console.log('📋 Value: ' + value);
+            console.log('📋 Selected Index: ' + selectedIndex);
+            
+            return 'debug_success';
+          }
+        }
+        
+        return 'no_instance';
+      })();
+    ''';
+    
+    try {
+      final result = await _main.runJavaScriptReturningResult(debugJs);
+      print('🔍 Debug result: $result');
+    } catch (e) {
+      print('❌ Debug error: $e');
+    }
+  }
+
+  // ---------- Startmenü-Aktion: nur „Auto" ----------
   Future<void> _openAuto() async {
     setState(() => _showStartMenu = false);
     await _main.loadRequest(Uri.parse(startVehicleUrl));
+
+    // Prüfen ob wir auf der Login-Seite sind
+    final currentUrl = await _main.currentUrl();
+    if (currentUrl != null && await _isB2CLoginDom()) {
+      // Auf Login-Seite - kein Sheet anzeigen
+      return;
+    }
 
     // Fahrzeuge ermitteln (automatisch neu scannen, falls leer)
     final vehicles = await _scanVehiclesWithPolling();
 
     // 1 Fahrzeug -> direkt wählen und sofort Laden-Sheet
     if (vehicles.length == 1) {
+      print('🚗 Auto-selecting vehicle: ${vehicles.first.label}');
+      await _debugVehicleSelection(); // Debug vor Auswahl
       await _selectVehicle(vehicles.first);
-      await Future.delayed(const Duration(milliseconds: 250));
+      await Future.delayed(const Duration(milliseconds: 1000)); // Kurz warten
+      await _debugVehicleSelection(); // Debug nach Auswahl
       if (!mounted) return;
       _openChargingSheet();
       return;
@@ -449,8 +643,11 @@ class _WebShellState extends State<WebShell> {
       );
       if (!mounted) return;
       if (chosen != null) {
+        print('🚗 User selected vehicle: ${chosen.label}');
+        await _debugVehicleSelection(); // Debug vor Auswahl
         await _selectVehicle(chosen);
-        await Future.delayed(const Duration(milliseconds: 250));
+        await Future.delayed(const Duration(milliseconds: 1000)); // Kurz warten
+        await _debugVehicleSelection(); // Debug nach Auswahl
         _openChargingSheet();
       } else {
         // abgebrochen -> Startmenü wieder zeigen
@@ -473,6 +670,8 @@ class _WebShellState extends State<WebShell> {
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
+      isDismissible: true,
+      enableDrag: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -486,6 +685,11 @@ class _WebShellState extends State<WebShell> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Sofortladung gestartet (${minutes} min)')),
           );
+        },
+        onVehicleChanged: () async {
+          // Warte kurz damit die WebView-Daten aktualisiert werden
+          await Future.delayed(const Duration(milliseconds: 1500));
+          print('🔄 Vehicle changed - data should be refreshed');
         },
       ),
     );
@@ -584,6 +788,23 @@ class _WebShellState extends State<WebShell> {
                 await _openAuto();
               } else if (v == 'creds') {
                 await _openCredentials();
+              } else if (v == 'test_notification') {
+                await _showVehicleNotification();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Test-Benachrichtigung gesendet!')),
+                  );
+                }
+              } else if (v == 'check_status') {
+                final isPluggedIn = await checkVehiclePluggedIn(_main);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Fahrzeug Status: ${isPluggedIn ? "Eingesteckt" : "Nicht eingesteckt"}'),
+                      duration: const Duration(seconds: 3),
+                    ),
+                  );
+                }
               } else if (v == 'logout') {
                 await storage.delete(key: _kUser);
                 await storage.delete(key: _kPass);
@@ -596,6 +817,9 @@ class _WebShellState extends State<WebShell> {
                 }
                 await _main.loadRequest(
                     Uri.parse('https://soleco-optimizer.ch/Account/SignOut'));
+                // Kurz warten und dann zur Login-Seite
+                await Future.delayed(const Duration(milliseconds: 1000));
+                await _main.loadRequest(Uri.parse(startVehicleUrl));
                 _didAutoLogin = false;
                 setState(() => _showStartMenu = true);
               }
@@ -604,6 +828,8 @@ class _WebShellState extends State<WebShell> {
               PopupMenuItem(value: 'views', child: Text('Zu Ansichten')),
               PopupMenuItem(value: 'vehicle', child: Text('Zu Fahrzeuge')),
               PopupMenuItem(value: 'creds', child: Text('Login speichern/ändern')),
+              PopupMenuItem(value: 'test_notification', child: Text('Test Benachrichtigung')),
+              PopupMenuItem(value: 'check_status', child: Text('Status prüfen')),
               PopupMenuItem(value: 'logout', child: Text('Abmelden')),
             ],
           ),
@@ -613,7 +839,6 @@ class _WebShellState extends State<WebShell> {
         children: [
           WebViewWidget(controller: _main),
           if (_loading) const LinearProgressIndicator(minHeight: 2),
-          if (_showStartMenu) const _StartOverlay(),
         ],
       ),
       floatingActionButton: _showStartMenu
@@ -626,18 +851,49 @@ class _WebShellState extends State<WebShell> {
               label: const Text('Start'),
             ),
       bottomSheet: _showStartMenu
-          ? StartMenu(
-              onAuto: _openAuto,
+          ? Container(
+              height: MediaQuery.of(context).size.height * 0.35, // Feste Höhe, blockiert nicht den ganzen Screen
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+              ),
+              child: Column(
+                children: [
+                  // Handle zum Ziehen
+                  Container(
+                    margin: const EdgeInsets.only(top: 12),
+                    width: 42,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.black12,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  // StartMenu Inhalt
+                  Expanded(
+                    child: StartMenu(
+                      onClose: () => setState(() => _showStartMenu = false),
+                      onAuto: _openAuto,
+                    ),
+                  ),
+                ],
+              ),
             )
           : null,
     );
   }
 }
 
-/// Startmenü – schwebende Karte unten (nur noch „Auto“)
+/// Startmenü – schwebende Karte unten (nur noch „Auto")
 class StartMenu extends StatelessWidget {
+  final VoidCallback? onClose;
   final VoidCallback onAuto;
-  const StartMenu({super.key, required this.onAuto});
+  
+  const StartMenu({
+    super.key, 
+    this.onClose,
+    required this.onAuto,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -655,8 +911,20 @@ class StartMenu extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('Schnellstart',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Schnellstart',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+                if (onClose != null)
+                  IconButton(
+                    onPressed: onClose,
+                    icon: const Icon(Icons.close, size: 20),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+              ],
+            ),
             const SizedBox(height: 10),
             Row(
               children: [
@@ -715,24 +983,6 @@ class _RoundAction extends StatelessWidget {
   }
 }
 
-/// zartes Overlay-Hintergrundmuster
-class _StartOverlay extends StatelessWidget {
-  const _StartOverlay();
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Colors.transparent, Color(0x11F28C00)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 /// ---- Login speichern / ändern ----
 class CredsScreen extends StatefulWidget {
@@ -893,11 +1143,13 @@ class ChargingSheet extends StatefulWidget {
   final int defaultMinutes;
   final WebViewController webViewController;
   final Future<void> Function(int minutes) onStart;
+  final Future<void> Function()? onVehicleChanged;
   const ChargingSheet({
     super.key,
     required this.defaultMinutes,
     required this.webViewController,
     required this.onStart,
+    this.onVehicleChanged,
   });
 
   @override
@@ -922,7 +1174,28 @@ class _ChargingSheetState extends State<ChargingSheet> {
   @override
   void initState() {
     super.initState();
+    // Lade Daten sofort und dann nochmal nach kurzer Verzögerung
     _loadVehicleData();
+    // Zusätzlicher Versuch nach 3 Sekunden für den Fall dass die WebView-Daten noch nicht aktualisiert sind
+    Future.delayed(const Duration(seconds: 3), () {
+      if (mounted) {
+        print('🔄 Auto-refreshing vehicle data after 3 seconds...');
+        _loadVehicleData();
+      }
+    });
+  }
+
+  // Funktion um Daten neu zu laden (wird aufgerufen wenn Fahrzeug gewechselt wird)
+  void refreshVehicleData() {
+    _loadVehicleData();
+  }
+
+  // Erweiterte Funktion um Daten nach Fahrzeugwechsel zu laden
+  Future<void> refreshVehicleDataAfterSelection() async {
+    print('🔄 Refreshing vehicle data after selection...');
+    // Warte länger damit die WebView-Daten vollständig aktualisiert sind
+    await Future.delayed(const Duration(milliseconds: 2000));
+    await _loadVehicleData();
   }
 
   @override
@@ -932,28 +1205,23 @@ class _ChargingSheetState extends State<ChargingSheet> {
   }
 
   Future<void> _loadVehicleData() async {
+    // Daten aus der Views-Seite sammeln
     try {
       setState(() => _busy = true);
       
-      print('🔄 Loading vehicle data from both pages...');
+      print('🔄 Loading vehicle data from Views page...');
       
-      int currentRange = 0;
-      int maxRange = 0;
-      
-      // 1. Lade Current Range von der Views-Seite
-      print('📊 Loading current range from Views page...');
-      final currentUrl = await widget.webViewController.currentUrl();
-      if (currentUrl == null || !currentUrl.contains('/Views')) {
-        print('🔄 Switching to Views page for current range...');
-        await widget.webViewController.loadRequest(Uri.parse('https://soleco-optimizer.ch/Views'));
-        await Future.delayed(const Duration(seconds: 2));
-      }
-      
+      // Warten kurz, damit die Seite vollständig geladen ist
       await Future.delayed(const Duration(milliseconds: 500));
       
-      final currentRangeJs = '''
+      // JavaScript um Daten von der Views-Seite zu extrahieren
+      final viewsDataJs = '''
         (function(){
-          console.log('🔍 Searching for current range on Views page...');
+          console.log('🔍 Searching for vehicle data on Views page...');
+          
+          // Suche nach den spezifischen SVG-Text-Elementen
+          var currentRange = null;
+          var maxRange = null;
           
           // Suche nach SVG-Text-Elementen mit km-Werten
           var svgTexts = document.querySelectorAll('text[id*="text860"], text[id*="tspan858"]');
@@ -970,121 +1238,108 @@ class _ChargingSheetState extends State<ChargingSheet> {
               console.log('Found km value: ' + value);
               
               // Erste gefundene Zahl ist wahrscheinlich current range (kleinere Zahl)
-              if (value > 50 && value < 500) {
-                console.log('✅ Current Range: ' + value + ' km');
-                return value;
+              if (currentRange === null && value > 50 && value < 500) {
+                currentRange = value;
+                console.log('✅ Current Range: ' + currentRange + ' km');
+              }
+              // Zweite gefundene Zahl ist wahrscheinlich max range (größere Zahl)
+              else if (maxRange === null && value > 200 && value < 1000) {
+                maxRange = value;
+                console.log('✅ Max Range: ' + maxRange + ' km');
               }
             }
           }
           
           // Fallback: Suche nach allen Text-Elementen mit km
-          var allTexts = document.querySelectorAll('text, span, div, p');
-          for (var i = 0; i < allTexts.length; i++) {
-            var text = allTexts[i].textContent.trim();
-            var match = text.match(/(\d+)\s*km/i);
-            if (match) {
-              var value = parseInt(match[1]);
-              if (value > 50 && value < 500) {
-                console.log('✅ Current Range (fallback): ' + value + ' km');
-                return value;
-              }
-            }
-          }
-          
-          console.log('❌ No current range found');
-          return null;
-        })();
-      ''';
-      
-      final currentRangeResult = await widget.webViewController.runJavaScriptReturningResult(currentRangeJs);
-      currentRange = int.tryParse(currentRangeResult.toString()) ?? 0;
-      print('📊 Current Range Result: $currentRange');
-      
-      // 2. Lade Max Range von der Settings/VehiclesConfig-Seite
-      print('📊 Loading max range from Settings/VehiclesConfig page...');
-      await widget.webViewController.loadRequest(Uri.parse('https://soleco-optimizer.ch/Settings/VehiclesConfig'));
-      await Future.delayed(const Duration(seconds: 2));
-      await Future.delayed(const Duration(milliseconds: 500));
-      
-      final maxRangeJs = '''
-        (function(){
-          console.log('🔍 Searching for max range on Settings/VehiclesConfig page...');
-          
-          // Suche nach DistanceMax Input-Feld
-          var selectors = [
-            'input[name="DistanceMax"]',
-            'input[id*="DistanceMax"]',
-            'input[aria-valuenow]',
-            '.dx-numberbox input[value]',
-            'input[type="hidden"][name="DistanceMax"]'
-          ];
-          
-          for (var i = 0; i < selectors.length; i++) {
-            var inputs = document.querySelectorAll(selectors[i]);
-            console.log('Selector ' + selectors[i] + ' found ' + inputs.length + ' elements');
-            for (var j = 0; j < inputs.length; j++) {
-              var input = inputs[j];
-              var value = input.value || input.getAttribute('aria-valuenow') || input.getAttribute('value');
-              if (value && !isNaN(parseInt(value))) {
-                var num = parseInt(value);
-                if (num > 200 && num < 1000) { // Realistische Max Range
-                  console.log('✅ Max Range gefunden: ' + num + ' with selector: ' + selectors[i]);
-                  return num;
+          if (currentRange === null || maxRange === null) {
+            var allTexts = document.querySelectorAll('text, span, div, p');
+            for (var i = 0; i < allTexts.length; i++) {
+              var text = allTexts[i].textContent.trim();
+              var match = text.match(/(\d+)\s*km/i);
+              if (match) {
+                var value = parseInt(match[1]);
+                if (currentRange === null && value > 50 && value < 500) {
+                  currentRange = value;
+                  console.log('✅ Current Range (fallback): ' + currentRange + ' km');
+                } else if (maxRange === null && value > 200 && value < 1000) {
+                  maxRange = value;
+                  console.log('✅ Max Range (fallback): ' + maxRange + ' km');
                 }
               }
             }
           }
           
-          console.log('❌ No max range found');
-          return null;
+          // Rückgabe der gefundenen Werte
+          if (currentRange && maxRange) {
+            console.log('✅ Both values found: Current=' + currentRange + ', Max=' + maxRange);
+            return JSON.stringify({current: currentRange, max: maxRange, success: true});
+          } else {
+            console.log('❌ Missing data: Current=' + currentRange + ', Max=' + maxRange);
+            return JSON.stringify({current: currentRange, max: maxRange, success: false});
+          }
         })();
       ''';
       
-      final maxRangeResult = await widget.webViewController.runJavaScriptReturningResult(maxRangeJs);
-      maxRange = int.tryParse(maxRangeResult.toString()) ?? 0;
-      print('📊 Max Range Result: $maxRange');
+      print('🚗 Loading data from Views page...');
+      final result = await widget.webViewController.runJavaScriptReturningResult(viewsDataJs);
       
-      // 3. Setze die gefundenen Werte
-      if (currentRange > 0 && maxRange > 0) {
-        setState(() {
-          _currentRange = currentRange;
-          _maxRange = maxRange;
-          _hasRealData = true;
-        });
-        print('✅ Echte Fahrzeugdaten geladen: Current: $currentRange km (Views), Max: $maxRange km (Settings/VehiclesConfig)');
+      print('🚗 Views data result: $result');
+      
+      try {
+        final resultStr = result.toString();
+        final data = jsonDecode(resultStr) as Map<String, dynamic>;
         
-        // Berechne automatisch die Minuten basierend auf 80% Ladung
-        _calculateQuickCharge();
+        final currentRange = data['current'] as int?;
+        final maxRange = data['max'] as int?;
+        final success = data['success'] as bool? ?? false;
         
-        // Zeige Erfolgs-Snackbar
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Fahrzeugdaten geladen: ${currentRange}km / ${maxRange}km'),
-              backgroundColor: Colors.green,
-              duration: const Duration(seconds: 2),
-            ),
-          );
+        if (success && currentRange != null && maxRange != null && currentRange > 0 && maxRange > 0) {
+          setState(() {
+            _currentRange = currentRange;
+            _maxRange = maxRange;
+            _hasRealData = true;
+          });
+          print('✅ Echte Fahrzeugdaten geladen: Current: $currentRange km, Max: $maxRange km');
+          
+          // Zeige Erfolgs-Snackbar
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Fahrzeugdaten geladen: ${currentRange}km / ${maxRange}km'),
+                backgroundColor: Colors.green,
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+        } else {
+          setState(() {
+            _currentRange = 0;
+            _maxRange = 0;
+            _hasRealData = false;
+          });
+          print('❌ Keine gültigen Fahrzeugdaten gefunden');
+          
+          // Zeige Fehler
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('❌ Keine Fahrzeugdaten gefunden - bitte Views-Seite laden'),
+                backgroundColor: Colors.red,
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
         }
-      } else {
+      } catch (e) {
+        print('❌ Error parsing Views data: $e');
         setState(() {
           _currentRange = 0;
           _maxRange = 0;
           _hasRealData = false;
         });
-        print('❌ Keine gültigen Fahrzeugdaten gefunden');
-        
-        // Zeige Fehler
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('❌ Keine Fahrzeugdaten gefunden'),
-              backgroundColor: Colors.red,
-              duration: Duration(seconds: 3),
-            ),
-          );
-        }
       }
+      
+      _calculateQuickCharge();
       
     } catch (e) {
       print('❌ Fehler beim Laden der Fahrzeugdaten: $e');
@@ -1099,8 +1354,9 @@ class _ChargingSheetState extends State<ChargingSheet> {
   }
 
   void _calculateQuickCharge() {
-    if (!_hasRealData || _maxRange == 0) {
+    if (!_hasRealData || _currentRange == 0 || _maxRange == 0) {
       _calculatedMinutes = 0;
+      setState(() {});
       return;
     }
     
@@ -1109,6 +1365,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
     
     if (rangeToCharge <= 0) {
       _calculatedMinutes = 0;
+      setState(() {});
       return;
     }
     
@@ -1118,8 +1375,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
     final extraMinutes = (baseMinutes / 15).round(); // 1 Minute pro 15 Minuten
     _calculatedMinutes = (baseMinutes + extraMinutes).clamp(0, 600);
     
-    // Setze die berechneten Minuten in das Textfeld
-    _minCtrl.text = _calculatedMinutes.toString();
+    setState(() {});
   }
 
   Widget _buildMainSlider() {
@@ -1287,7 +1543,7 @@ class _ChargingSheetState extends State<ChargingSheet> {
               ),
               IconButton(
                 onPressed: () async {
-                  await _loadVehicleData();
+                  await refreshVehicleDataAfterSelection();
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(

@@ -558,6 +558,7 @@ class _WebShellState extends State<WebShell> {
       ),
       builder: (_) => ChargingSheet(
         defaultMinutes: 180,
+        webViewController: _main,
         onStart: (minutes) async {
           await _triggerParameters(minutes);
           if (!mounted) return;
@@ -970,13 +971,15 @@ class _VehiclePickerSheetState extends State<_VehiclePickerSheet> {
   }
 }
 
-/// ---- Schnellstart-Sheet (nur Minuten!) ----
+/// ---- Neues Charging Interface mit Slider und PageView ----
 class ChargingSheet extends StatefulWidget {
   final int defaultMinutes;
+  final WebViewController webViewController;
   final Future<void> Function(int minutes) onStart;
   const ChargingSheet({
     super.key,
     required this.defaultMinutes,
+    required this.webViewController,
     required this.onStart,
   });
 
@@ -985,74 +988,412 @@ class ChargingSheet extends StatefulWidget {
 }
 
 class _ChargingSheetState extends State<ChargingSheet> {
-  late final TextEditingController _minCtrl =
-      TextEditingController(text: widget.defaultMinutes.toString());
+  final PageController _pageController = PageController();
+  int _currentPage = 0;
+  double _chargePercentage = 80.0; // Standard 80%
   bool _busy = false;
+  
+  // Quick Charge Daten
+  int _currentRange = 0;
+  int _maxRange = 0;
+  int _calculatedMinutes = 0;
 
-  Widget _chip(int v) {
-    return ChoiceChip(
-      label: Text('$v min'),
-      selected: _minCtrl.text.trim() == '$v',
-      onSelected: (_) => setState(() => _minCtrl.text = '$v'),
-    );
+  @override
+  void initState() {
+    super.initState();
+    _loadVehicleData();
+  }
+
+  Future<void> _loadVehicleData() async {
+    // Daten aus der WebView sammeln
+    try {
+      // Current Range aus VehicleAppointments sammeln
+      final currentRangeJs = '''
+        (function(){
+          var input = document.querySelector('input[name="CurrentRange"]');
+          if (input) {
+            return parseInt(input.value) || 0;
+          }
+          return 0;
+        })();
+      ''';
+      
+      // Max Range aus Settings/VehiclesConfig sammeln
+      final maxRangeJs = '''
+        (function(){
+          var input = document.querySelector('input[name="DistanceMax"]');
+          if (input) {
+            return parseInt(input.value) || 0;
+          }
+          return 0;
+        })();
+      ''';
+      
+      final currentRangeResult = await widget.webViewController.runJavaScriptReturningResult(currentRangeJs);
+      final maxRangeResult = await widget.webViewController.runJavaScriptReturningResult(maxRangeJs);
+      
+      final currentRange = int.tryParse(currentRangeResult.toString()) ?? 184;
+      final maxRange = int.tryParse(maxRangeResult.toString()) ?? 455;
+      
+      setState(() {
+        _currentRange = currentRange;
+        _maxRange = maxRange;
+      });
+      
+      _calculateQuickCharge();
+    } catch (e) {
+      // Fallback zu Testwerten
+      setState(() {
+        _currentRange = 184;
+        _maxRange = 455;
+      });
+    }
+  }
+
+  void _calculateQuickCharge() {
+    final targetRange = (_maxRange * _chargePercentage / 100).round();
+    final rangeToCharge = targetRange - _currentRange;
+    
+    // Einfache Berechnung: 1 km = 2 Minuten (kann angepasst werden)
+    _calculatedMinutes = (rangeToCharge * 2).clamp(0, 600);
+    
+    setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding:
-          EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 16, right: 16, top: 16),
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.7,
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Center(
-            child: Container(
-              width: 42, height: 4,
-              decoration: BoxDecoration(color: Colors.black12, borderRadius: BorderRadius.circular(2)),
+          // Handle
+          Container(
+            margin: const EdgeInsets.only(top: 12),
+            width: 42,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.black12,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          
+          // Hauptslider (0-100%)
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                Text(
+                  'Ladung: ${_chargePercentage.round()}%',
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Brand.primary,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _buildMainSlider(),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('0%', style: TextStyle(color: Colors.grey[600])),
+                    Text('100%', style: TextStyle(color: Colors.grey[600])),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          
+          // PageView für die beiden Seiten
+          Expanded(
+            child: PageView(
+              controller: _pageController,
+              onPageChanged: (index) => setState(() => _currentPage = index),
+              children: [
+                _buildPlannedPage(),
+                _buildQuickChargePage(),
+              ],
+            ),
+          ),
+          
+          // Page Indicator
+          Padding(
+            padding: const EdgeInsets.only(bottom: 16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _buildPageIndicator(0),
+                const SizedBox(width: 8),
+                _buildPageIndicator(1),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMainSlider() {
+    return SliderTheme(
+      data: SliderTheme.of(context).copyWith(
+        activeTrackColor: Brand.primary,
+        inactiveTrackColor: Brand.primary.withOpacity(0.3),
+        thumbColor: Colors.white,
+        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 16),
+        trackHeight: 8,
+        overlayShape: const RoundSliderOverlayShape(overlayRadius: 24),
+      ),
+      child: Slider(
+        value: _chargePercentage,
+        min: 0,
+        max: 100,
+        divisions: 100,
+        onChanged: (value) {
+          setState(() {
+            _chargePercentage = value;
+          });
+          _calculateQuickCharge();
+        },
+      ),
+    );
+  }
+
+  Widget _buildPageIndicator(int index) {
+    return Container(
+      width: 8,
+      height: 8,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: _currentPage == index ? Brand.primary : Colors.grey[300],
+      ),
+    );
+  }
+
+  Widget _buildPlannedPage() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Planned',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 24),
+          
+          // Day Slider
+          const Text(
+            'Days',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 12),
-          const Text('Sofortladung', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            children: [_chip(60), _chip(120), _chip(180)],
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _minCtrl,
-            keyboardType: TextInputType.number,
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            decoration: const InputDecoration(
-              labelText: 'Dauer in Minuten',
-              border: OutlineInputBorder(),
+          _buildDaySelector(),
+          
+          const SizedBox(height: 24),
+          
+          // Time Slider
+          const Text(
+            'Time',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
             ),
           ),
-          const SizedBox(height: 8),
-          FilledButton.icon(
-            onPressed: _busy
-                ? null
-                : () async {
-                    final m = int.tryParse(_minCtrl.text.trim());
-                    if (m == null || m < 0) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Bitte gültige Minuten eingeben.')),
-                      );
-                      return;
-                    }
-                    setState(() => _busy = true);
-                    try {
-                      await widget.onStart(m);
-                      if (context.mounted) Navigator.pop(context);
-                    } finally {
-                      if (mounted) setState(() => _busy = false);
-                    }
-                  },
-            icon: const Icon(Icons.flash_on),
-            label: Text(_busy ? 'Bitte warten…' : 'Laden starten'),
-          ),
           const SizedBox(height: 12),
+          _buildTimeSelector(),
+          
+          const Spacer(),
+          
+          // Start Button (blockiert)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Text(
+              'Start (Coming Soon)',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDaySelector() {
+    final days = ['Today', 'Tomorrow', 'In 2 Days', 'In 3 Days'];
+    return Container(
+      height: 50,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: days.length,
+        itemBuilder: (context, index) {
+          return Container(
+            margin: const EdgeInsets.only(right: 12),
+            child: ChoiceChip(
+              label: Text(days[index]),
+              selected: index == 0, // Default: Today
+              onSelected: (selected) {
+                // Funktion kommt später
+              },
+              selectedColor: Brand.primary.withOpacity(0.2),
+              labelStyle: TextStyle(
+                color: index == 0 ? Brand.primary : Colors.grey[600],
+                fontWeight: index == 0 ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildTimeSelector() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[300]!),
+      ),
+      child: const Text(
+        'Time selection will adapt based on day choice',
+        style: TextStyle(
+          color: Colors.grey,
+          fontStyle: FontStyle.italic,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQuickChargePage() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Quick Charge',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 24),
+          
+          // Vehicle Info
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Brand.primary.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Current Range:'),
+                    Text('$_currentRange km', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Max Range:'),
+                    Text('$_maxRange km', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Target Range:'),
+                    Text('${(_maxRange * _chargePercentage / 100).round()} km', 
+                         style: const TextStyle(fontWeight: FontWeight.bold, color: Brand.primary)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          
+          const SizedBox(height: 24),
+          
+          // Calculation Result
+          if (_calculatedMinutes > 0) ...[
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.green.withOpacity(0.3)),
+              ),
+              child: Column(
+                children: [
+                  const Text(
+                    'Berechnung:',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Range to charge: ${((_maxRange * _chargePercentage / 100) - _currentRange).round()} km',
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                  Text(
+                    'Estimated time: $_calculatedMinutes minutes',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+          ],
+          
+          const Spacer(),
+          
+          // Quick Charge Button
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _busy ? null : () {
+                // Für Test: Nur Berechnung anzeigen
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('Quick Charge würde $_calculatedMinutes Minuten laden'),
+                    backgroundColor: Brand.primary,
+                  ),
+                );
+              },
+              icon: const Icon(Icons.flash_on),
+              label: Text(_busy ? 'Berechne...' : 'Quick Charge'),
+              style: FilledButton.styleFrom(
+                backgroundColor: Brand.primary,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
+          ),
         ],
       ),
     );

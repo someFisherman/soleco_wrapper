@@ -941,8 +941,6 @@ class _WebShellState extends State<WebShell> {
                     child: StartMenu(
                       onClose: () => setState(() => _showStartMenu = false),
               onAuto: _openAuto,
-                      onInstant: _openInstant,
-                      onPlanned: _openPlanned,
                     ),
                   ),
                 ],
@@ -957,15 +955,11 @@ class _WebShellState extends State<WebShell> {
 class StartMenu extends StatelessWidget {
   final VoidCallback? onClose;
   final VoidCallback onAuto;
-  final VoidCallback? onInstant;
-  final VoidCallback? onPlanned;
   
   const StartMenu({
     super.key, 
     this.onClose,
     required this.onAuto,
-    this.onInstant,
-    this.onPlanned,
   });
 
   @override

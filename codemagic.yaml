@@ -6,10 +6,15 @@ workflows:
       flutter: stable
       xcode: latest
       groups:
-        - appstore_connect   # enthält: APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_PRIVATE_KEY, (optional) CERTIFICATE_PRIVATE_KEY
+        # Muss enthalten:
+        # APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID,
+        # APP_STORE_CONNECT_PRIVATE_KEY, (optional) CERTIFICATE_PRIVATE_KEY
+        - appstore_connect
       vars:
         BUNDLE_ID: ch.soleco.optimizer
         EXPORT_METHOD: app-store   # "app-store" (TestFlight) oder "ad-hoc"
+        # Optional: TEAM_ID kann gesetzt werden (10-stellig, z. B. ABCDE12345)
+        # TEAM_ID: ABCDE12345
 
     cache:
       cache_paths:
@@ -77,23 +82,61 @@ workflows:
           keychain add-certificates
           xcode-project use-profiles
 
-      # --- NEU: Export via Codemagic-Tool statt "flutter build ipa" ---
-      - name: Build signed IPA (Release) via xcode-project
+      # --- Build + Archive + Export via xcodebuild (statt flutter build ipa) ---
+      - name: Build & Archive (Release)
         script: |
           set -euxo pipefail
           flutter clean
-          # Nur generieren, kein Export – das übernimmt build-ipa
+          # (Optional) Release-Build, damit Pods & Settings warm sind
           flutter build ios --release
-          # Archiv + Export mit installierten Profiles
-          xcode-project build-ipa \
-            --workspace ios/Runner.xcworkspace \
-            --scheme Runner \
-            --export-method "$EXPORT_METHOD"
+
+          # Archiv erstellen (nutzt die via 'use-profiles' gesetzten Profile)
+          xcodebuild \
+            -workspace ios/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            archive \
+            CODE_SIGN_STYLE=Automatic
+
+      - name: Export IPA (Release)
+        script: |
+          set -euxo pipefail
+          # exportOptions.plist generieren
+          cat > exportOptions.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>__METHOD__</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+            <key>destination</key><string>export</string>
+            <key>thinning</key><string>&lt;none&gt;</string>
+          </dict>
+          </plist>
+          PLIST
+          /usr/libexec/PlistBuddy -c "Set :method ${EXPORT_METHOD}" exportOptions.plist
+          if [ -n "${TEAM_ID:-}" ]; then
+            /usr/libexec/PlistBuddy -c "Add :teamID string ${TEAM_ID}" exportOptions.plist || \
+            /usr/libexec/PlistBuddy -c "Set :teamID ${TEAM_ID}" exportOptions.plist
+          fi
+
+          # Export der IPA
+          rm -rf build/ios/ipa
+          xcodebuild -exportArchive \
+            -archivePath build/ios/archive/Runner.xcarchive \
+            -exportPath build/ios/ipa \
+            -exportOptionsPlist exportOptions.plist
+
           echo "=== IPA(s) ==="
           find build/ios/ipa -name "*.ipa" -print || true
           IPA_PATH="$(ls -1 build/ios/ipa/*.ipa 2>/dev/null || true)"
           if [ -z "$IPA_PATH" ]; then
-            echo "❌ Keine .ipa erzeugt. Prüfe die Xcode-Logs oberhalb."
+            echo "❌ Keine .ipa erzeugt. Prüfe die Xcode-Logs oberhalb (Provisioning/Assets)."
             exit 1
           fi
           echo "✅ IPA gefunden: $IPA_PATH"
@@ -104,6 +147,7 @@ workflows:
         key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
         issuer_id: $APP_STORE_CONNECT_ISSUER_ID
         submit_to_testflight: true
+        # Optional: bestimmte Gruppen
         # beta_groups:
         #   - Internal Testers
 

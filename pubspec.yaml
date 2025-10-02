@@ -17,9 +17,8 @@ dependencies:
   # Sicheres Speichern von Login-Daten & Cookies
   flutter_secure_storage: ^9.2.2
   
-  # Benachrichtigungen und Background Services
+  # Benachrichtigungen (ohne Background Service)
   flutter_local_notifications: ^16.3.0
-  workmanager: ^0.5.2
 
 dev_dependencies:
   flutter_test:

@@ -6,7 +6,7 @@ workflows:
       flutter: stable
       xcode: latest
       groups:
-        - appstore_connect          # <- enthält API-Key Variablen
+        - appstore_connect          # enthält: APP_STORE_CONNECT_PRIVATE_KEY, APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID
       vars:
         BUNDLE_ID: ch.soleco.optimizer
         EXPORT_METHOD: app-store    # app-store ODER ad-hoc
@@ -39,7 +39,7 @@ workflows:
           /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Optimizer" "$INFO"
           /usr/libexec/PlistBuddy -c "Set :CFBundleName Optimizer" "$INFO" 2>/dev/null || \
           /usr/libexec/PlistBuddy -c "Add :CFBundleName string Optimizer" "$INFO"
-          # Bundle-ID im Xcode-Projekt setzen
+          # Bundle-ID im Xcode-Projekt setzen (wird vom CLI später autodetektiert)
           sed -i.bak -E "s/PRODUCT_BUNDLE_IDENTIFIER = [^;]+;/PRODUCT_BUNDLE_IDENTIFIER = ${BUNDLE_ID};/g" ios/Runner.xcodeproj/project.pbxproj
 
       - name: 🔑 Fetch signing files (automatic)
@@ -60,9 +60,9 @@ workflows:
           fi
 
           # Profile & Zertifikate automatisch erstellen/holen
+          # <-- WICHTIG: KEIN --bundle-id MEHR, CLI liest die ID aus dem Projekt
           app-store-connect fetch-signing-files \
             --type "$SIGNING_TYPE" \
-            --bundle-id "$BUNDLE_ID" \
             --create
 
           # Zertifikate importieren & Profile anwenden
@@ -82,23 +82,16 @@ workflows:
 
     publishing:
       app_store_connect:
-        # Auth via Umgebungsvariablen (aus der Gruppe)
+        # Auth via Variablen aus der Gruppe
         api_key: $APP_STORE_CONNECT_PRIVATE_KEY
         key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
         issuer_id: $APP_STORE_CONNECT_ISSUER_ID
 
-        # TestFlight
+        # TestFlight Upload
         submit_to_testflight: true
-        # Optional: vorhandene TestFlight-Gruppe(n) eintragen
-        # (falls keine angegeben sind, stehen interne Tester trotzdem zur Verfügung)
+        # Optional bestimmte Gruppen:
         # beta_groups:
         #   - Internal Testers
-
-        # (Optional) App Store Auto-Submission/Release – erst später aktivieren:
-        # submit_to_app_store: true
-        # cancel_previous_submissions: true
-        # release_type: AFTER_APPROVAL  # MANUAL | AFTER_APPROVAL | SCHEDULED
-        # earliest_release_date: 2025-10-05T10:00:00+02:00
 
     artifacts:
       - build/ios/ipa/*.ipa

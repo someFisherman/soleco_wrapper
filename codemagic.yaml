@@ -6,10 +6,7 @@ workflows:
       flutter: stable
       xcode: latest
       groups:
-        # Gruppe muss enthalten:
-        # APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID,
-        # APP_STORE_CONNECT_PRIVATE_KEY, (optional) CERTIFICATE_PRIVATE_KEY
-        - appstore_connect
+        - appstore_connect   # enthält: APP_STORE_CONNECT_KEY_IDENTIFIER, APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_PRIVATE_KEY, (optional) CERTIFICATE_PRIVATE_KEY
       vars:
         BUNDLE_ID: ch.soleco.optimizer
         EXPORT_METHOD: app-store   # "app-store" (TestFlight) oder "ad-hoc"
@@ -25,11 +22,9 @@ workflows:
           set -euxo pipefail
           flutter --version
           flutter pub get
-          # iOS-Gerüst anlegen, falls nicht vorhanden
           if [ ! -d ios ]; then
             flutter create . --platforms=ios
           fi
-          # iOS-Minimum OS setzen & CocoaPods aktualisieren
           cd ios
           sed -i.bak -e "s/platform :ios, '.*'/platform :ios, '13.0'/" Podfile || true
           pod repo update
@@ -43,27 +38,23 @@ workflows:
           /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Optimizer" "$INFO"
           /usr/libexec/PlistBuddy -c "Set :CFBundleName Optimizer" "$INFO" 2>/dev/null || \
           /usr/libexec/PlistBuddy -c "Add :CFBundleName string Optimizer" "$INFO"
-          # Bundle-ID im Projekt setzen
           sed -i.bak -E "s/PRODUCT_BUNDLE_IDENTIFIER = [^;]+;/PRODUCT_BUNDLE_IDENTIFIER = ${BUNDLE_ID};/g" ios/Runner.xcodeproj/project.pbxproj
 
       - name: 🔑 Fetch signing files (automatic)
         script: |
           set -euxo pipefail
-          # App Store Connect Secrets vorhanden?
           test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER}"
           test -n "${APP_STORE_CONNECT_ISSUER_ID}"
           test -n "${APP_STORE_CONNECT_PRIVATE_KEY}"
 
           keychain initialize
 
-          # Export-Typ wählen
           if [ "$EXPORT_METHOD" = "ad-hoc" ]; then
             SIGNING_TYPE="IOS_APP_ADHOC"
           else
             SIGNING_TYPE="IOS_APP_STORE"
           fi
 
-          # Mit/ohne CERTIFICATE_PRIVATE_KEY
           if [ -n "${CERTIFICATE_PRIVATE_KEY:-}" ]; then
             app-store-connect fetch-signing-files \
               --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
@@ -86,23 +77,26 @@ workflows:
           keychain add-certificates
           xcode-project use-profiles
 
-      - name: Build signed IPA (Release)
+      # --- NEU: Export via Codemagic-Tool statt "flutter build ipa" ---
+      - name: Build signed IPA (Release) via xcode-project
         script: |
           set -euxo pipefail
           flutter clean
-          flutter build ipa --release \
-            --build-name=1.0.$PROJECT_BUILD_NUMBER \
-            --build-number=$PROJECT_BUILD_NUMBER
-
-          echo "=== Inhalt unter build/ios ==="
-          find build/ios -maxdepth 3 -type f -print || true
-
+          # Nur generieren, kein Export – das übernimmt build-ipa
+          flutter build ios --release
+          # Archiv + Export mit installierten Profiles
+          xcode-project build-ipa \
+            --workspace ios/Runner.xcworkspace \
+            --scheme Runner \
+            --export-method "$EXPORT_METHOD"
+          echo "=== IPA(s) ==="
+          find build/ios/ipa -name "*.ipa" -print || true
           IPA_PATH="$(ls -1 build/ios/ipa/*.ipa 2>/dev/null || true)"
-          if [ -z "${IPA_PATH}" ]; then
-            echo "❌ Keine .ipa erzeugt. Prüfe die Build-Logs oberhalb (CodeSign/Xcode/Assets/Bundle-ID)."
+          if [ -z "$IPA_PATH" ]; then
+            echo "❌ Keine .ipa erzeugt. Prüfe die Xcode-Logs oberhalb."
             exit 1
           fi
-          echo "✅ IPA gefunden: ${IPA_PATH}"
+          echo "✅ IPA gefunden: $IPA_PATH"
 
     publishing:
       app_store_connect:
@@ -110,7 +104,6 @@ workflows:
         key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
         issuer_id: $APP_STORE_CONNECT_ISSUER_ID
         submit_to_testflight: true
-        # Optional:
         # beta_groups:
         #   - Internal Testers
 

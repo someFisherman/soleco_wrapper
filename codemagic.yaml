@@ -5,6 +5,8 @@ workflows:
     environment:
       flutter: stable
       xcode: latest
+      groups:
+        - appstore_connect        # <— DIESE ZEILE(n) SIND WICHTIG
       vars:
         BUNDLE_ID: ch.soleco.optimizer
         EXPORT_METHOD: app-store   # oder ad-hoc
@@ -34,18 +36,21 @@ workflows:
       - name: 🔑 Fetch signing files (automatic)
         script: |
           set -euxo pipefail
-          # Keychain vorbereiten & API-Key auf Disk schreiben
+          # Prüfen, ob die Variablen da sind (zeigt keine Secrets an)
+          test -n "${APP_STORE_CONNECT_KEY_IDENTIFIER}" || (echo "Missing APP_STORE_CONNECT_KEY_IDENTIFIER"; exit 1)
+          test -n "${APP_STORE_CONNECT_ISSUER_ID}"    || (echo "Missing APP_STORE_CONNECT_ISSUER_ID"; exit 1)
+          test -n "${APP_STORE_TEAM_ID}"              || (echo "Missing APP_STORE_TEAM_ID"; exit 1)
+          test -n "${APP_STORE_CONNECT_PRIVATE_KEY}"  || (echo "Missing APP_STORE_CONNECT_PRIVATE_KEY"; exit 1)
+
           keychain initialize
           echo "$APP_STORE_CONNECT_PRIVATE_KEY" > /tmp/appstore_key.p8
 
-          # Typ wählen: App Store (TestFlight) oder Ad-Hoc
           if [ "$EXPORT_METHOD" = "ad-hoc" ]; then
             SIGNING_TYPE="IOS_ADHOC"
           else
             SIGNING_TYPE="IOS_APP_STORE"
           fi
 
-          # Profile & Zertifikate automatisch holen/erzeugen
           app-store-connect fetch-signing-files \
             --api-key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
             --api-issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
@@ -55,7 +60,6 @@ workflows:
             --create \
             --team-id "$APP_STORE_TEAM_ID"
 
-          # Zertifikate in die Keychain importieren, Profile ins Xcode-Projekt schreiben
           keychain add-certificates
           xcode-project use-profiles
 

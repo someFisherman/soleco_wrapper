@@ -141,8 +141,8 @@ class _MainAppState extends State<MainApp> {
         NavigationDelegate(
           onPageFinished: (url) async {
             print('Background page loaded: $url');
-            await _persistCookies(url);
-            
+              await _persistCookies(url);
+
             // Prüfe ob wir eingeloggt sind
             if (url.contains('/VehicleAppointments') || url.contains('/Views')) {
               setState(() => _isLoggedIn = true);
@@ -159,8 +159,29 @@ class _MainAppState extends State<MainApp> {
     final pass = await storage.read(key: _kPass);
     
     if (user != null && pass != null) {
-      await _restoreCookies();
-      await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
+      setState(() => _isLoading = true);
+      try {
+        await _restoreCookies();
+        await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
+        
+        // Warte und prüfe ob wir automatisch eingeloggt sind
+        await Future.delayed(const Duration(seconds: 3));
+        final loginSuccess = await _verifyLogin();
+        
+        if (loginSuccess) {
+          setState(() => _isLoggedIn = true);
+          await _loadSites();
+          await _loadVehicles();
+        } else {
+          // Automatisches Login fehlgeschlagen - zeige Login-Screen
+          setState(() => _isLoggedIn = false);
+        }
+      } catch (e) {
+        print('Auto-login error: $e');
+        setState(() => _isLoggedIn = false);
+      } finally {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -237,15 +258,92 @@ class _MainAppState extends State<MainApp> {
       await Future.delayed(const Duration(seconds: 2));
       await _autoLoginB2C();
       
+      // Warte länger und prüfe ob Login erfolgreich war
+      await Future.delayed(const Duration(seconds: 3));
+      final loginSuccess = await _verifyLogin();
+      
+      if (loginSuccess) {
+        setState(() => _isLoggedIn = true);
+        await _loadSites();
+        await _loadVehicles();
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Erfolgreich eingeloggt!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        // Login fehlgeschlagen - zurück zum Login
+        setState(() => _isLoggedIn = false);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Login fehlgeschlagen - bitte prüfen Sie Ihre Anmeldedaten'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+      
     } catch (e) {
       print('Login error: $e');
+      setState(() => _isLoggedIn = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Login fehlgeschlagen: $e')),
+          SnackBar(
+            content: Text('Login fehlgeschlagen: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     } finally {
       setState(() => _isLoading = false);
+    }
+  }
+
+  // ---------- Login-Verifikation ----------
+  Future<bool> _verifyLogin() async {
+    try {
+      final js = '''
+        (function(){
+          // Prüfe ob wir auf der Login-Seite sind (dann ist Login fehlgeschlagen)
+          var loginForm = document.getElementById('localAccountForm');
+          if (loginForm) {
+            console.log('Still on login page - login failed');
+            return false;
+          }
+          
+          // Prüfe ob wir auf der Hauptseite sind
+          var vehicleSelect = document.getElementById('vehicleSelection');
+          var siteSelect = document.getElementById('siteSelection');
+          
+          if (vehicleSelect || siteSelect) {
+            console.log('On main page - login successful');
+            return true;
+          }
+          
+          // Prüfe URL
+          var url = window.location.href;
+          if (url.includes('/VehicleAppointments') || url.includes('/Views')) {
+            console.log('On correct URL - login successful');
+            return true;
+          }
+          
+          console.log('Login verification failed');
+          return false;
+        })();
+      ''';
+      
+      final result = await _backgroundController.runJavaScriptReturningResult(js);
+      final success = result.toString() == 'true';
+      print('Login verification result: $success');
+      return success;
+    } catch (e) {
+      print('Error verifying login: $e');
+      return false;
     }
   }
 
@@ -300,9 +398,9 @@ class _MainAppState extends State<MainApp> {
         var sites = [];
         
         // DevExtreme SelectBox
-        if(window.jQuery && jQuery.fn.dxSelectBox){
+          if(window.jQuery && jQuery.fn.dxSelectBox){
           var inst = jQuery(siteSelect).dxSelectBox('instance');
-          if(inst){
+            if(inst){
             var items = inst.option('items') || inst.option('dataSource');
             if(Array.isArray(items)){
               for(var i = 0; i < items.length; i++){
@@ -365,17 +463,17 @@ class _MainAppState extends State<MainApp> {
         if(!siteSelect) return 'no_element';
         
         // DevExtreme SelectBox
-        if(window.jQuery && jQuery.fn.dxSelectBox){
+          if(window.jQuery && jQuery.fn.dxSelectBox){
           var inst = jQuery(siteSelect).dxSelectBox('instance');
-          if(inst){
+            if(inst){
             inst.option('value', '$siteValue');
-            inst.option('opened', false);
-            
+                  inst.option('opened', false);
+                  
             // Trigger change event
-            var changeEvent = new Event('change', { bubbles: true });
+                  var changeEvent = new Event('change', { bubbles: true });
             siteSelect.dispatchEvent(changeEvent);
             
-            return 'success';
+                  return 'success';
           }
         }
         
@@ -411,16 +509,16 @@ class _MainAppState extends State<MainApp> {
   // ---------- Fahrzeuge laden ----------
   Future<void> _loadVehicles() async {
     final js = '''
-      (function(){
+        (function(){
         var vehicleSelect = document.getElementById('vehicleSelection');
         if(!vehicleSelect) return JSON.stringify({ok: false, vehicles: []});
-        
+          
         var vehicles = [];
-        
+          
         // DevExtreme SelectBox
-        if(window.jQuery && jQuery.fn.dxSelectBox){
+            if(window.jQuery && jQuery.fn.dxSelectBox){
           var inst = jQuery(vehicleSelect).dxSelectBox('instance');
-          if(inst){
+              if(inst){
             var items = inst.option('items') || inst.option('dataSource');
             if(Array.isArray(items)){
               for(var i = 0; i < items.length; i++){
@@ -442,9 +540,9 @@ class _MainAppState extends State<MainApp> {
         }
         
         return JSON.stringify({ok: true, vehicles: vehicles});
-      })();
-    ''';
-
+        })();
+      ''';
+      
     try {
       final result = await _backgroundController.runJavaScriptReturningResult(js);
       final jsonStr = result is String ? result : result.toString();
@@ -502,15 +600,15 @@ class _MainAppState extends State<MainApp> {
         return 'failed';
       })();
     ''';
-
+    
     try {
       await _backgroundController.runJavaScript(js);
       
       // Warte auf Datenaktualisierung
       await Future.delayed(const Duration(seconds: 2));
       
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Fahrzeug "${vehicle.label}" ausgewählt')),
         );
       }
@@ -539,13 +637,13 @@ class _MainAppState extends State<MainApp> {
               if (eMin) { try { eMin.option("value", m); } catch(e){} }
               try { form.updateData("Minutes", m); } catch(e){} }
               
-              var btn = document.querySelector("#PostParametersButton");
-              if (btn) {
-                try { if (window.jQuery) jQuery(btn).trigger('dxclick'); } catch(e){}
-                try { btn.dispatchEvent(new MouseEvent('pointerdown',{bubbles:true})); } catch(e){}
-                try { btn.dispatchEvent(new MouseEvent('pointerup',{bubbles:true})); } catch(e){}
-                try { btn.click(); } catch(e){}
-                return "clicked";
+          var btn = document.querySelector("#PostParametersButton");
+          if (btn) {
+            try { if (window.jQuery) jQuery(btn).trigger('dxclick'); } catch(e){}
+            try { btn.dispatchEvent(new MouseEvent('pointerdown',{bubbles:true})); } catch(e){}
+            try { btn.dispatchEvent(new MouseEvent('pointerup',{bubbles:true})); } catch(e){}
+            try { btn.click(); } catch(e){}
+            return "clicked";
               }
             }
           }
@@ -558,8 +656,8 @@ class _MainAppState extends State<MainApp> {
     try {
       await _backgroundController.runJavaScript(js);
       
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Ladevorgang gestartet (${minutes} min)')),
         );
       }
@@ -573,9 +671,9 @@ class _MainAppState extends State<MainApp> {
 
   // ---------- Logout ----------
   Future<void> _logout() async {
-    await storage.delete(key: _kUser);
-    await storage.delete(key: _kPass);
-    await storage.delete(key: _kCookieStore);
+                await storage.delete(key: _kUser);
+                await storage.delete(key: _kPass);
+                await storage.delete(key: _kCookieStore);
     await storage.delete(key: _kSelectedSite);
     await _backgroundController.clearCache();
     
@@ -586,8 +684,8 @@ class _MainAppState extends State<MainApp> {
       _currentSite = null;
     });
     
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Abgemeldet')),
       );
     }
@@ -595,6 +693,40 @@ class _MainAppState extends State<MainApp> {
 
   @override
   Widget build(BuildContext context) {
+    // Zeige Loading-Screen beim App-Start
+    if (_isLoading && !_isLoggedIn) {
+      return Scaffold(
+        body: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Brand.primary, Brand.primaryDark],
+            ),
+          ),
+          child: const Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+                CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+                SizedBox(height: 24),
+                Text(
+                  'Lade App...',
+                  style: TextStyle(
+                color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     if (!_isLoggedIn) {
       return LoginScreen(onLogin: _performLogin, isLoading: _isLoading);
     }
@@ -603,31 +735,6 @@ class _MainAppState extends State<MainApp> {
       appBar: AppBar(
         title: const Text('Optimizer', style: TextStyle(fontWeight: FontWeight.w600)),
         actions: [
-          if (_sites.isNotEmpty)
-            PopupMenuButton<String>(
-              onSelected: _switchSite,
-              itemBuilder: (context) => _sites.map((site) => 
-                PopupMenuItem(
-                  value: site.value,
-                  child: Text(site.label),
-                ),
-              ).toList(),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.location_on, size: 16),
-                    const SizedBox(width: 4),
-                    Text(
-                      _sites.firstWhere((s) => s.value == _currentSite, orElse: () => _sites.first).label,
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                    const Icon(Icons.arrow_drop_down, size: 16),
-                  ],
-                ),
-              ),
-            ),
           PopupMenuButton<String>(
             onSelected: (value) {
               if (value == 'logout') _logout();
@@ -635,19 +742,31 @@ class _MainAppState extends State<MainApp> {
             itemBuilder: (context) => const [
               PopupMenuItem(value: 'logout', child: Text('Abmelden')),
             ],
-          ),
-        ],
-      ),
+                  ),
+              ],
+            ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : VehicleScreen(
+          ? const Center(
+        child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('Lade Daten...'),
+                ],
+              ),
+            )
+          : MainScreen(
+              sites: _sites,
+              currentSite: _currentSite,
               vehicles: _vehicles,
+              onSiteChanged: _switchSite,
               onVehicleSelected: _selectVehicle,
               onStartCharging: _startCharging,
               onRefresh: () async {
                 await _loadVehicles();
               },
-            ),
+      ),
     );
   }
 }
@@ -658,7 +777,7 @@ class LoginScreen extends StatefulWidget {
   final bool isLoading;
 
   const LoginScreen({
-    super.key,
+    super.key, 
     required this.onLogin,
     required this.isLoading,
   });
@@ -694,18 +813,18 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(32),
-                  child: Form(
+        child: Form(
                     key: _formKey,
-                    child: Column(
+          child: Column(
                       mainAxisSize: MainAxisSize.min,
-                      children: [
+            children: [
                         // Logo/Icon
-                        Container(
+            Container(
                           width: 80,
                           height: 80,
                           decoration: const BoxDecoration(
                             color: Brand.primary,
-                            shape: BoxShape.circle,
+                shape: BoxShape.circle,
                           ),
                           child: const Icon(
                             Icons.ev_station,
@@ -735,9 +854,9 @@ class _LoginScreenState extends State<LoginScreen> {
                         const SizedBox(height: 32),
                         
                         // Username Field
-                        TextFormField(
+              TextFormField(
                           controller: _usernameController,
-                          decoration: const InputDecoration(
+                decoration: const InputDecoration(
                             labelText: 'Benutzername',
                             prefixIcon: Icon(Icons.person),
                             border: OutlineInputBorder(),
@@ -752,10 +871,10 @@ class _LoginScreenState extends State<LoginScreen> {
                         const SizedBox(height: 16),
                         
                         // Password Field
-                        TextFormField(
+              TextFormField(
                           controller: _passwordController,
-                          obscureText: true,
-                          decoration: const InputDecoration(
+                obscureText: true,
+                decoration: const InputDecoration(
                             labelText: 'Kennwort',
                             prefixIcon: Icon(Icons.lock),
                             border: OutlineInputBorder(),
@@ -795,8 +914,8 @@ class _LoginScreenState extends State<LoginScreen> {
                                   )
                                 : const Text('Anmelden'),
                           ),
-                        ),
-                        const SizedBox(height: 16),
+              ),
+              const SizedBox(height: 16),
                         
                         // Register Link
                         TextButton(
@@ -821,7 +940,272 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-/// ---------------- Vehicle Screen ----------------
+/// ---------------- Main Screen ----------------
+class MainScreen extends StatefulWidget {
+  final List<SiteItem> sites;
+  final String? currentSite;
+  final List<VehicleItem> vehicles;
+  final Future<void> Function(String siteValue) onSiteChanged;
+  final Future<void> Function(VehicleItem vehicle) onVehicleSelected;
+  final Future<void> Function(int minutes) onStartCharging;
+  final Future<void> Function() onRefresh;
+
+  const MainScreen({
+    super.key,
+    required this.sites,
+    required this.currentSite,
+    required this.vehicles,
+    required this.onSiteChanged,
+    required this.onVehicleSelected,
+    required this.onStartCharging,
+    required this.onRefresh,
+  });
+
+  @override
+  State<MainScreen> createState() => _MainScreenState();
+}
+
+class _MainScreenState extends State<MainScreen> {
+  VehicleItem? _selectedVehicle;
+  int _chargingMinutes = 180;
+  bool _isCharging = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Site Selection
+          if (widget.sites.isNotEmpty) ...[
+            const Text(
+              'Anlage auswählen',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+                    const Text(
+                      'Aktuelle Anlage:',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String>(
+                      value: widget.currentSite,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        prefixIcon: Icon(Icons.location_on),
+                      ),
+                      items: widget.sites.map((site) => 
+                        DropdownMenuItem(
+                          value: site.value,
+                          child: Text(site.label),
+                        ),
+                      ).toList(),
+                      onChanged: (value) {
+                        if (value != null) {
+                          widget.onSiteChanged(value);
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+          ],
+          
+          // Vehicle Selection
+          Row(
+        children: [
+              const Text(
+                'Fahrzeugauswahl',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const Spacer(),
+              IconButton(
+                onPressed: widget.onRefresh,
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Aktualisieren',
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          
+          // Vehicle List
+          Expanded(
+            child: widget.vehicles.isEmpty
+                ? Center(
+            child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                        Icon(
+                          Icons.directions_car_outlined,
+                          size: 64,
+                          color: Colors.grey[400],
+                        ),
+                        const SizedBox(height: 16),
+                Text(
+                          'Keine Fahrzeuge gefunden',
+                          style: TextStyle(
+                            fontSize: 18,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                const SizedBox(height: 8),
+                        Text(
+                          widget.sites.isEmpty 
+                              ? 'Bitte warten Sie, bis die Anlagen geladen sind'
+                              : 'Bitte wählen Sie zuerst eine Anlage aus',
+                          style: TextStyle(
+                            color: Colors.grey[500],
+                          ),
+                          textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+                  )
+                : ListView.builder(
+                    itemCount: widget.vehicles.length,
+                    itemBuilder: (context, index) {
+                      final vehicle = widget.vehicles[index];
+                      final isSelected = _selectedVehicle?.index == vehicle.index;
+                      
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        elevation: isSelected ? 4 : 1,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(
+                            color: isSelected ? Brand.primary : Colors.transparent,
+                            width: 2,
+                          ),
+                        ),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: isSelected ? Brand.primary : Colors.grey[300],
+                            child: Icon(
+                              Icons.directions_car,
+                              color: isSelected ? Colors.white : Colors.grey[600],
+                            ),
+                          ),
+                          title: Text(
+                            vehicle.label,
+                            style: TextStyle(
+                              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            ),
+                          ),
+                          trailing: isSelected
+                              ? const Icon(Icons.check_circle, color: Brand.primary)
+                              : const Icon(Icons.radio_button_unchecked),
+                          onTap: () {
+                            setState(() => _selectedVehicle = vehicle);
+                            widget.onVehicleSelected(vehicle);
+        },
+      ),
+    );
+                    },
+                  ),
+          ),
+          
+          // Charging Controls
+          if (_selectedVehicle != null) ...[
+            const SizedBox(height: 24),
+          const Text(
+              'Ladeeinstellungen',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+            const SizedBox(height: 16),
+            
+            // Minutes Slider
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Ladedauer: $_chargingMinutes Minuten',
+                      style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 12),
+                    Slider(
+                      value: _chargingMinutes.toDouble(),
+                      min: 30,
+                      max: 600,
+                      divisions: 57,
+                      label: '$_chargingMinutes min',
+                      onChanged: (value) {
+                        setState(() => _chargingMinutes = value.round());
+                      },
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('30 min', style: TextStyle(color: Colors.grey[600])),
+                        Text('600 min', style: TextStyle(color: Colors.grey[600])),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 16),
+            
+            // Start Charging Button
+            SizedBox(
+            width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _isCharging ? null : () async {
+                  setState(() => _isCharging = true);
+                  await widget.onStartCharging(_chargingMinutes);
+                  setState(() => _isCharging = false);
+                },
+                icon: _isCharging
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                        ),
+                      )
+                    : const Icon(Icons.flash_on),
+                label: Text(_isCharging ? 'Starte Ladevorgang...' : 'Ladevorgang starten'),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
+          ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// ---------------- Vehicle Screen (Legacy - wird nicht mehr verwendet) ----------------
 class VehicleScreen extends StatefulWidget {
   final List<VehicleItem> vehicles;
   final Future<void> Function(VehicleItem vehicle) onVehicleSelected;
@@ -876,9 +1260,9 @@ class _VehicleScreenState extends State<VehicleScreen> {
           if (widget.vehicles.isEmpty)
             Expanded(
               child: Center(
-                child: Column(
+            child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
+              children: [
                     Icon(
                       Icons.directions_car_outlined,
                       size: 64,
@@ -891,17 +1275,17 @@ class _VehicleScreenState extends State<VehicleScreen> {
                         fontSize: 18,
                         color: Colors.grey[600],
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Bitte wählen Sie zuerst eine Anlage aus',
-                      style: TextStyle(
-                        color: Colors.grey[500],
-                      ),
-                    ),
-                  ],
                 ),
-              ),
+                const SizedBox(height: 8),
+                Text(
+                      'Bitte wählen Sie zuerst eine Anlage aus',
+                  style: TextStyle(
+                        color: Colors.grey[500],
+                  ),
+                ),
+              ],
+            ),
+          ),
             )
           else
             Expanded(
@@ -950,7 +1334,7 @@ class _VehicleScreenState extends State<VehicleScreen> {
           
           // Charging Controls
           if (_selectedVehicle != null) ...[
-            const SizedBox(height: 24),
+          const SizedBox(height: 24),
             const Text(
               'Ladeeinstellungen',
               style: TextStyle(
@@ -963,14 +1347,14 @@ class _VehicleScreenState extends State<VehicleScreen> {
             // Minutes Slider
             Card(
               child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
+              padding: const EdgeInsets.all(16),
+              child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
+                children: [
+                  Text(
                       'Ladedauer: $_chargingMinutes Minuten',
-                      style: const TextStyle(
-                        fontSize: 16,
+                    style: const TextStyle(
+                      fontSize: 16,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -997,12 +1381,12 @@ class _VehicleScreenState extends State<VehicleScreen> {
               ),
             ),
             
-            const SizedBox(height: 16),
+          const SizedBox(height: 16),
             
             // Start Charging Button
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
                 onPressed: _isCharging ? null : () async {
                   setState(() => _isCharging = true);
                   await widget.onStartCharging(_chargingMinutes);
@@ -1019,11 +1403,11 @@ class _VehicleScreenState extends State<VehicleScreen> {
                       )
                     : const Icon(Icons.flash_on),
                 label: Text(_isCharging ? 'Starte Ladevorgang...' : 'Ladevorgang starten'),
-                style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                ),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
               ),
             ),
+          ),
           ],
         ],
       ),

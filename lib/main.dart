@@ -162,7 +162,8 @@ class _MainAppState extends State<MainApp> {
       setState(() => _isLoading = true);
       try {
         await _restoreCookies();
-        await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
+        // Lade zuerst Views-Seite für Site-Auswahl
+        await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/Views'));
         
         // Warte und prüfe ob wir automatisch eingeloggt sind
         await Future.delayed(const Duration(seconds: 3));
@@ -171,6 +172,9 @@ class _MainAppState extends State<MainApp> {
         if (loginSuccess) {
           setState(() => _isLoggedIn = true);
           await _loadSites();
+          // Wechsle dann zu VehicleAppointments für Fahrzeuge
+          await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
+          await Future.delayed(const Duration(seconds: 2));
           await _loadVehicles();
         } else {
           // Automatisches Login fehlgeschlagen - zeige Login-Screen
@@ -247,24 +251,31 @@ class _MainAppState extends State<MainApp> {
     setState(() => _isLoading = true);
     
     try {
+      // Lösche alte Cookies um sicherzustellen, dass wir nicht mit alten Sessions arbeiten
+      await _backgroundController.clearCache();
+      await storage.delete(key: _kCookieStore);
+      
       // Speichere Credentials
       await storage.write(key: _kUser, value: username);
       await storage.write(key: _kPass, value: password);
       
-      // Lade Login-Seite
-      await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
+      // Lade Login-Seite (Views für Site-Auswahl)
+      await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/Views'));
       
       // Warte auf Login-Seite und führe Auto-Login durch
       await Future.delayed(const Duration(seconds: 2));
       await _autoLoginB2C();
       
       // Warte länger und prüfe ob Login erfolgreich war
-      await Future.delayed(const Duration(seconds: 3));
+      await Future.delayed(const Duration(seconds: 4)); // Länger warten
       final loginSuccess = await _verifyLogin();
       
       if (loginSuccess) {
         setState(() => _isLoggedIn = true);
         await _loadSites();
+        // Wechsle zu VehicleAppointments für Fahrzeuge
+        await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
+        await Future.delayed(const Duration(seconds: 2));
         await _loadVehicles();
         
         if (mounted) {
@@ -309,30 +320,69 @@ class _MainAppState extends State<MainApp> {
     try {
       final js = '''
         (function(){
+          console.log('🔍 Verifying login...');
+          console.log('Current URL:', window.location.href);
+          
           // Prüfe ob wir auf der Login-Seite sind (dann ist Login fehlgeschlagen)
           var loginForm = document.getElementById('localAccountForm');
           if (loginForm) {
-            console.log('Still on login page - login failed');
+            console.log('❌ Still on login page - login failed');
             return false;
           }
           
-          // Prüfe ob wir auf der Hauptseite sind
+          // Prüfe auf Fehlermeldungen
+          var errorElements = document.querySelectorAll('.error, .alert-danger, .validation-summary-errors');
+          for (var i = 0; i < errorElements.length; i++) {
+            var error = errorElements[i];
+            if (error.style.display !== 'none' && error.textContent.trim()) {
+              console.log('❌ Found error message:', error.textContent.trim());
+              return false;
+            }
+          }
+          
+          // Prüfe ob wir auf einer Fehlerseite sind
+          var url = window.location.href;
+          if (url.includes('error') || url.includes('unauthorized') || url.includes('forbidden')) {
+            console.log('❌ On error page - login failed');
+            return false;
+          }
+          
+          // Prüfe ob wir auf der Hauptseite sind UND ob die wichtigen Elemente vorhanden sind
           var vehicleSelect = document.getElementById('vehicleSelection');
           var siteSelect = document.getElementById('siteSelection');
           
-          if (vehicleSelect || siteSelect) {
-            console.log('On main page - login successful');
-            return true;
+          // Prüfe ob wir auf der richtigen Domain sind
+          if (!url.includes('soleco-optimizer.ch')) {
+            console.log('❌ Not on soleco domain - login failed');
+            return false;
           }
           
-          // Prüfe URL
-          var url = window.location.href;
+          // Prüfe ob wir auf einer der erwarteten Seiten sind
           if (url.includes('/VehicleAppointments') || url.includes('/Views')) {
-            console.log('On correct URL - login successful');
-            return true;
+            console.log('✅ On correct URL');
+            
+            // Zusätzliche Prüfung: Suche nach Benutzer-spezifischen Elementen
+            var userElements = document.querySelectorAll('[class*="user"], [id*="user"], [class*="profile"], [id*="profile"]');
+            var hasUserContent = userElements.length > 0;
+            
+            // Prüfe ob die Seite vollständig geladen ist (nicht nur Login-Redirect)
+            var pageContent = document.body.textContent || '';
+            var hasRealContent = pageContent.length > 1000; // Mindestens 1000 Zeichen Inhalt
+            
+            console.log('Has user elements:', hasUserContent);
+            console.log('Has real content:', hasRealContent);
+            console.log('Page content length:', pageContent.length);
+            
+            if (hasRealContent) {
+              console.log('✅ Login successful - page has real content');
+              return true;
+            } else {
+              console.log('❌ Login failed - page has no real content');
+              return false;
+            }
           }
           
-          console.log('Login verification failed');
+          console.log('❌ Login verification failed - not on expected page');
           return false;
         })();
       ''';
@@ -357,6 +407,8 @@ class _MainAppState extends State<MainApp> {
 
     final js = '''
       (function(){
+        console.log('🔐 Starting auto-login...');
+        
         function setVal(el,val){
           if(!el) return false;
           el.focus(); el.value=val;
@@ -367,21 +419,54 @@ class _MainAppState extends State<MainApp> {
           }catch(e){}
           return true;
         }
+        
         function tryLogin(){
           var u=document.getElementById('UserId');
           var p=document.getElementById('password');
           var btn=document.getElementById('next');
+          
+          console.log('Login elements found:', {
+            username: !!u,
+            password: !!p,
+            button: !!btn
+          });
+          
           if(u&&p&&btn){
+            console.log('Setting credentials...');
             setVal(u,'${esc(user)}');
             setVal(p,'${esc(pass)}');
+            
+            // Prüfe ob die Werte wirklich gesetzt wurden
+            var usernameSet = u.value === '${esc(user)}';
+            var passwordSet = p.value === '${esc(pass)}';
+            
+            console.log('Credentials set:', {
+              username: usernameSet,
+              password: passwordSet
+            });
+            
+            if (usernameSet && passwordSet) {
+              console.log('Clicking login button...');
             btn.click();
             return true;
+            } else {
+              console.log('❌ Failed to set credentials properly');
+              return false;
+            }
           }
           return false;
         }
+        
         if(!tryLogin()){
+          console.log('🔄 Retrying login...');
           var tries=0;
-          var t=setInterval(function(){ tries++; if(tryLogin()||tries>50){clearInterval(t);} },100);
+          var t=setInterval(function(){ 
+            tries++; 
+            if(tryLogin()||tries>50){
+              clearInterval(t);
+              console.log('Login attempt finished after', tries, 'tries');
+            } 
+          },100);
         }
       })();
     ''';
@@ -392,36 +477,77 @@ class _MainAppState extends State<MainApp> {
   Future<void> _loadSites() async {
     final js = '''
       (function(){
+        console.log('🔍 Loading sites from Views page...');
+        
+        // Suche nach dem siteSelection Element
         var siteSelect = document.getElementById('siteSelection');
-        if(!siteSelect) return JSON.stringify({ok: false, sites: []});
+        console.log('Site selection element found:', !!siteSelect);
+        
+        if(!siteSelect) {
+          console.log('❌ No siteSelection element found');
+          return JSON.stringify({ok: false, sites: [], reason: 'no_element'});
+        }
         
         var sites = [];
         
-        // DevExtreme SelectBox
+        // DevExtreme SelectBox Methode
+        try {
           if(window.jQuery && jQuery.fn.dxSelectBox){
-          var inst = jQuery(siteSelect).dxSelectBox('instance');
+            var inst = jQuery(siteSelect).dxSelectBox('instance');
             if(inst){
-            var items = inst.option('items') || inst.option('dataSource');
-            if(Array.isArray(items)){
-              for(var i = 0; i < items.length; i++){
-                var item = items[i];
-                var label = item.text || item.name || item.label || item.value || ('Site ' + (i+1));
-                var value = item.value || item.id || item.text || label;
-                sites.push({label: label, value: value});
+              console.log('✅ Found DevExtreme SelectBox instance');
+              
+              var items = inst.option('items') || inst.option('dataSource');
+              console.log('Items/DataSource:', items);
+              
+              if(Array.isArray(items)){
+                for(var i = 0; i < items.length; i++){
+                  var item = items[i];
+                  var label = item.text || item.name || item.label || item.value || ('Site ' + (i+1));
+                  var value = item.value || item.id || item.text || label;
+                  sites.push({label: label, value: value});
+                  console.log('Added site:', label, value);
+                }
+              }
+            }
+          }
+        } catch(e) {
+          console.log('❌ DevExtreme method failed:', e);
+        }
+        
+        // Fallback: DOM scraping
+        if(sites.length === 0){
+          console.log('🔄 Trying DOM scraping fallback...');
+          
+          // Suche nach Optionen im Select
+          var options = siteSelect.querySelectorAll('option');
+          console.log('Found options:', options.length);
+          
+          for(var i = 0; i < options.length; i++){
+            var opt = options[i];
+            if(opt.value && opt.textContent.trim()) {
+              sites.push({label: opt.textContent.trim(), value: opt.value});
+              console.log('Added site from option:', opt.textContent.trim(), opt.value);
+            }
+          }
+          
+          // Fallback: Suche nach Dropdown-Items
+          if(sites.length === 0) {
+            var dropdownItems = document.querySelectorAll('.dx-selectbox-popup .dx-item .dx-item-content');
+            console.log('Found dropdown items:', dropdownItems.length);
+            
+            for(var i = 0; i < dropdownItems.length; i++){
+              var item = dropdownItems[i];
+              var text = item.textContent.trim();
+              if(text) {
+                sites.push({label: text, value: text});
+                console.log('Added site from dropdown:', text);
               }
             }
           }
         }
         
-        // Fallback: DOM scraping
-        if(sites.length === 0){
-          var options = siteSelect.querySelectorAll('option');
-          for(var i = 0; i < options.length; i++){
-            var opt = options[i];
-            sites.push({label: opt.textContent.trim(), value: opt.value});
-          }
-        }
-        
+        console.log('✅ Total sites found:', sites.length);
         return JSON.stringify({ok: true, sites: sites});
       })();
     ''';
@@ -430,6 +556,8 @@ class _MainAppState extends State<MainApp> {
       final result = await _backgroundController.runJavaScriptReturningResult(js);
       final jsonStr = result is String ? result : result.toString();
       final obj = jsonDecode(jsonStr) as Map<String, dynamic>;
+      
+      print('Site loading result: $obj');
       
       if (obj['ok'] == true) {
         final sitesList = (obj['sites'] as List).cast<Map<String, dynamic>>();
@@ -440,6 +568,8 @@ class _MainAppState extends State<MainApp> {
           )).toList();
         });
         
+        print('Loaded ${_sites.length} sites: ${_sites.map((s) => s.label).join(', ')}');
+        
         // Lade gespeicherte Site
         final savedSite = await storage.read(key: _kSelectedSite);
         if (savedSite != null && _sites.any((s) => s.value == savedSite)) {
@@ -447,6 +577,8 @@ class _MainAppState extends State<MainApp> {
         } else if (_sites.isNotEmpty) {
           _currentSite = _sites.first.value;
         }
+      } else {
+        print('Failed to load sites: ${obj['reason']}');
       }
     } catch (e) {
       print('Error loading sites: $e');
@@ -457,45 +589,60 @@ class _MainAppState extends State<MainApp> {
   Future<void> _switchSite(String siteValue) async {
     setState(() => _isLoading = true);
     
+    try {
+      // Wechsle zuerst zur Views-Seite für Site-Auswahl
+      await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/Views'));
+      await Future.delayed(const Duration(seconds: 2));
+    
     final js = '''
       (function(){
-        var siteSelect = document.getElementById('siteSelection');
-        if(!siteSelect) return 'no_element';
-        
-        // DevExtreme SelectBox
+          console.log('🔄 Switching to site: $siteValue');
+          
+          var siteSelect = document.getElementById('siteSelection');
+          if(!siteSelect) {
+            console.log('❌ No siteSelection element found');
+          return 'no_element';
+        }
+
+          // DevExtreme SelectBox
           if(window.jQuery && jQuery.fn.dxSelectBox){
-          var inst = jQuery(siteSelect).dxSelectBox('instance');
+            var inst = jQuery(siteSelect).dxSelectBox('instance');
             if(inst){
-            inst.option('value', '$siteValue');
+              console.log('✅ Found DevExtreme instance, setting value');
+              inst.option('value', '$siteValue');
                   inst.option('opened', false);
                   
-            // Trigger change event
+              // Trigger change event
                   var changeEvent = new Event('change', { bubbles: true });
-            siteSelect.dispatchEvent(changeEvent);
-            
+              siteSelect.dispatchEvent(changeEvent);
+              
+              console.log('✅ Site changed via DevExtreme');
                   return 'success';
+            }
           }
-        }
-        
-        // Fallback: DOM
-        var select = siteSelect.querySelector('select');
-        if(select){
-          select.value = '$siteValue';
-          var changeEvent = new Event('change', { bubbles: true });
-          select.dispatchEvent(changeEvent);
-          return 'success_dom';
-        }
-        
+          
+          // Fallback: DOM
+          var select = siteSelect.querySelector('select');
+          if(select){
+            select.value = '$siteValue';
+            var changeEvent = new Event('change', { bubbles: true });
+            select.dispatchEvent(changeEvent);
+            console.log('✅ Site changed via DOM');
+            return 'success_dom';
+          }
+          
+          console.log('❌ Failed to change site');
         return 'failed';
       })();
     ''';
 
-    try {
       await _backgroundController.runJavaScript(js);
       setState(() => _currentSite = siteValue);
       await storage.write(key: _kSelectedSite, value: siteValue);
       
-      // Warte auf Datenaktualisierung
+      // Warte auf Datenaktualisierung und wechsle dann zu VehicleAppointments
+      await Future.delayed(const Duration(seconds: 2));
+      await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
       await Future.delayed(const Duration(seconds: 2));
       await _loadVehicles();
       
@@ -510,35 +657,75 @@ class _MainAppState extends State<MainApp> {
   Future<void> _loadVehicles() async {
     final js = '''
         (function(){
+        console.log('🚗 Loading vehicles from VehicleAppointments page...');
+        console.log('Current URL:', window.location.href);
+        
         var vehicleSelect = document.getElementById('vehicleSelection');
-        if(!vehicleSelect) return JSON.stringify({ok: false, vehicles: []});
-          
+        console.log('Vehicle selection element found:', !!vehicleSelect);
+        
+        if(!vehicleSelect) {
+          console.log('❌ No vehicleSelection element found');
+          return JSON.stringify({ok: false, vehicles: [], reason: 'no_element'});
+        }
+        
         var vehicles = [];
-          
+        
         // DevExtreme SelectBox
+        try {
             if(window.jQuery && jQuery.fn.dxSelectBox){
-          var inst = jQuery(vehicleSelect).dxSelectBox('instance');
+            var inst = jQuery(vehicleSelect).dxSelectBox('instance');
               if(inst){
-            var items = inst.option('items') || inst.option('dataSource');
-            if(Array.isArray(items)){
-              for(var i = 0; i < items.length; i++){
-                var item = items[i];
-                var label = item.text || item.name || item.label || item.value || ('Vehicle ' + (i+1));
-                vehicles.push({label: label, index: i});
+              console.log('✅ Found DevExtreme SelectBox instance for vehicles');
+              
+              var items = inst.option('items') || inst.option('dataSource');
+              console.log('Vehicle items/DataSource:', items);
+              
+              if(Array.isArray(items)){
+                for(var i = 0; i < items.length; i++){
+                  var item = items[i];
+                  var label = item.text || item.name || item.label || item.value || ('Vehicle ' + (i+1));
+                  vehicles.push({label: label, index: i});
+                  console.log('Added vehicle:', label, i);
+                  }
+                }
+              }
+            }
+          } catch(e) {
+          console.log('❌ DevExtreme method failed for vehicles:', e);
+        }
+        
+        // Fallback: DOM scraping
+        if(vehicles.length === 0){
+          console.log('🔄 Trying DOM scraping fallback for vehicles...');
+          
+          var options = vehicleSelect.querySelectorAll('option');
+          console.log('Found vehicle options:', options.length);
+          
+          for(var i = 0; i < options.length; i++){
+            var opt = options[i];
+            if(opt.textContent.trim()) {
+              vehicles.push({label: opt.textContent.trim(), index: i});
+              console.log('Added vehicle from option:', opt.textContent.trim(), i);
+            }
+          }
+          
+          // Fallback: Suche nach Dropdown-Items
+          if(vehicles.length === 0) {
+            var dropdownItems = document.querySelectorAll('.dx-selectbox-popup .dx-item .dx-item-content');
+            console.log('Found vehicle dropdown items:', dropdownItems.length);
+            
+            for(var i = 0; i < dropdownItems.length; i++){
+              var item = dropdownItems[i];
+              var text = item.textContent.trim();
+              if(text) {
+                vehicles.push({label: text, index: i});
+                console.log('Added vehicle from dropdown:', text, i);
               }
             }
           }
         }
         
-        // Fallback: DOM scraping
-        if(vehicles.length === 0){
-          var options = vehicleSelect.querySelectorAll('option');
-          for(var i = 0; i < options.length; i++){
-            var opt = options[i];
-            vehicles.push({label: opt.textContent.trim(), index: i});
-          }
-        }
-        
+        console.log('✅ Total vehicles found:', vehicles.length);
         return JSON.stringify({ok: true, vehicles: vehicles});
         })();
       ''';
@@ -548,6 +735,8 @@ class _MainAppState extends State<MainApp> {
       final jsonStr = result is String ? result : result.toString();
       final obj = jsonDecode(jsonStr) as Map<String, dynamic>;
       
+      print('Vehicle loading result: $obj');
+      
       if (obj['ok'] == true) {
         final vehiclesList = (obj['vehicles'] as List).cast<Map<String, dynamic>>();
         setState(() {
@@ -556,6 +745,10 @@ class _MainAppState extends State<MainApp> {
             index: v['index'] as int,
           )).toList();
         });
+        
+        print('Loaded ${_vehicles.length} vehicles: ${_vehicles.map((v) => v.label).join(', ')}');
+      } else {
+        print('Failed to load vehicles: ${obj['reason']}');
       }
     } catch (e) {
       print('Error loading vehicles: $e');

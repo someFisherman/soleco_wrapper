@@ -133,7 +133,7 @@ class _MainAppState extends State<MainApp> {
     super.initState();
     _initBackgroundController();
     _initLoginController();
-    _checkLoginStatus();
+    _startLoginProcess();
   }
 
   void _initBackgroundController() {
@@ -165,11 +165,12 @@ class _MainAppState extends State<MainApp> {
             print('Login page loaded: $url');
             await _persistCookies(url);
             
-            // Prüfe ob Login erfolgreich war
+            // Prüfe ob Login erfolgreich war - erweiterte Erkennung
             if (url.contains('soleco-optimizer.ch') && 
                 !url.contains('b2clogin.com') && 
                 !url.contains('AzureADB2C') && 
-                !url.contains('Account/SignIn')) {
+                !url.contains('Account/SignIn') &&
+                !url.contains('signin-oidc')) {
               
               // Login erfolgreich - verstecke WebView und lade Daten
               setState(() => _showLoginWebView = false);
@@ -196,69 +197,16 @@ class _MainAppState extends State<MainApp> {
                 );
               }
             }
+            // Bei fehlgeschlagenem Login bleibt WebView sichtbar
           },
         ),
       );
   }
 
-  Future<void> _checkLoginStatus() async {
-    final user = await storage.read(key: _kUser);
-    final pass = await storage.read(key: _kPass);
-    
-    if (user != null && pass != null) {
-      setState(() => _isLoading = true);
-      try {
-        await _restoreCookies();
-        
-        // Versuche Auto-Login mit sichtbarer WebView
-        setState(() => _showLoginWebView = true);
-        await _loginController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
-        
-        // Warte und prüfe ob wir automatisch eingeloggt sind
-        bool loginSuccess = false;
-        int attempts = 0;
-        const maxAttempts = 3; // 3 Versuche über 15 Sekunden
-        
-        while (attempts < maxAttempts && !loginSuccess) {
-          attempts++;
-          print('Auto-login verification attempt $attempts/$maxAttempts');
-          
-          await Future.delayed(const Duration(seconds: 5));
-          loginSuccess = await _verifyLogin();
-          
-          if (!loginSuccess && attempts < maxAttempts) {
-            print('Auto-login verification failed, retrying in 5 seconds...');
-          }
-        }
-        
-        if (loginSuccess) {
-          // Auto-Login erfolgreich - verstecke WebView und lade Daten
-          setState(() => _showLoginWebView = false);
-          setState(() => _isLoggedIn = true);
-          await _copyCookiesToBackground();
-          await _loadSites();
-          await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
-          await Future.delayed(const Duration(seconds: 2));
-          await _loadVehicles();
-          setState(() => _isLoading = false);
-        } else {
-          // Automatisches Login fehlgeschlagen - zeige Login-Screen
-          print('Auto-login failed after $maxAttempts attempts');
-          setState(() => _showLoginWebView = false);
-          setState(() => _isLoggedIn = false);
-          setState(() => _isLoading = false);
-          // Lösche alte Credentials
-          await storage.delete(key: _kUser);
-          await storage.delete(key: _kPass);
-          await storage.delete(key: _kCookieStore);
-        }
-      } catch (e) {
-        print('Auto-login error: $e');
-        setState(() => _showLoginWebView = false);
-        setState(() => _isLoggedIn = false);
-        setState(() => _isLoading = false);
-      }
-    }
+  Future<void> _startLoginProcess() async {
+    // Starte direkt mit Login-WebView
+    setState(() => _showLoginWebView = true);
+    await _loginController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
   }
 
   // ---------- Cookies ----------
@@ -331,36 +279,6 @@ class _MainAppState extends State<MainApp> {
     } catch (_) {}
   }
 
-  // ---------- Login ----------
-  Future<void> _performLogin(String username, String password) async {
-    try {
-      // Lösche alte Cookies um sicherzustellen, dass wir nicht mit alten Sessions arbeiten
-      await _loginController.clearCache();
-      await _backgroundController.clearCache();
-      await storage.delete(key: _kCookieStore);
-      
-      // Speichere Credentials
-      await storage.write(key: _kUser, value: username);
-      await storage.write(key: _kPass, value: password);
-      
-      // Zeige Login-WebView und lade Login-Seite
-      setState(() => _showLoginWebView = true);
-      await _loginController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
-      
-    } catch (e) {
-      print('Login error: $e');
-      setState(() => _showLoginWebView = false);
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Login fehlgeschlagen: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
 
   // ---------- Login-Verifikation ----------
   Future<bool> _verifyLogin() async {
@@ -883,20 +801,9 @@ class _MainAppState extends State<MainApp> {
 
   @override
   Widget build(BuildContext context) {
-    // Zeige Login-WebView wenn Login aktiv ist
+    // Zeige Login-WebView wenn Login aktiv ist (ohne AppBar/X-Button)
     if (_showLoginWebView) {
       return Scaffold(
-        appBar: AppBar(
-          title: const Text('Anmeldung'),
-          backgroundColor: Brand.primary,
-          foregroundColor: Colors.white,
-          leading: IconButton(
-            icon: const Icon(Icons.close),
-            onPressed: () {
-              setState(() => _showLoginWebView = false);
-            },
-          ),
-        ),
         body: WebViewWidget(controller: _loginController),
       );
     }
@@ -945,9 +852,11 @@ class _MainAppState extends State<MainApp> {
     );
   }
 
-    // Zeige Login-Screen wenn nicht eingeloggt
+    // Zeige Login-WebView wenn nicht eingeloggt (Fallback)
     if (!_isLoggedIn) {
-      return LoginScreen(onLogin: _performLogin, isLoading: false);
+      return Scaffold(
+        body: WebViewWidget(controller: _loginController),
+      );
     }
 
     return Scaffold(
@@ -981,174 +890,6 @@ class _MainAppState extends State<MainApp> {
   }
 }
 
-/// ---------------- Login Screen ----------------
-class LoginScreen extends StatefulWidget {
-  final Future<void> Function(String username, String password) onLogin;
-  final bool isLoading;
-
-  const LoginScreen({
-    super.key, 
-    required this.onLogin,
-    required this.isLoading,
-  });
-
-  @override
-  State<LoginScreen> createState() => _LoginScreenState();
-}
-
-class _LoginScreenState extends State<LoginScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _usernameController = TextEditingController();
-  final _passwordController = TextEditingController();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Brand.primary, Brand.primaryDark],
-          ),
-        ),
-        child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Card(
-                elevation: 8,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(32),
-        child: Form(
-                    key: _formKey,
-          child: Column(
-                      mainAxisSize: MainAxisSize.min,
-            children: [
-                        // Logo/Icon
-            Container(
-                          width: 80,
-                          height: 80,
-                          decoration: const BoxDecoration(
-                            color: Brand.primary,
-                shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.ev_station,
-                            size: 40,
-                            color: Colors.white,
-                          ),
-                        ),
-                        const SizedBox(height: 24),
-                        
-                        // Title
-                        const Text(
-                          'Soleco Optimizer',
-                          style: TextStyle(
-                            fontSize: 28,
-                            fontWeight: FontWeight.bold,
-                            color: Brand.petrol,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Mit Benutzername anmelden',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                        const SizedBox(height: 32),
-                        
-                        // Username Field
-              TextFormField(
-                          controller: _usernameController,
-                decoration: const InputDecoration(
-                            labelText: 'Benutzername',
-                            prefixIcon: Icon(Icons.person),
-                            border: OutlineInputBorder(),
-                          ),
-                          validator: (value) {
-                            if (value == null || value.trim().isEmpty) {
-                              return 'Benutzername erforderlich';
-                            }
-                            return null;
-                          },
-                        ),
-                        const SizedBox(height: 16),
-                        
-                        // Password Field
-              TextFormField(
-                          controller: _passwordController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                            labelText: 'Kennwort',
-                            prefixIcon: Icon(Icons.lock),
-                            border: OutlineInputBorder(),
-                          ),
-                          validator: (value) {
-                            if (value == null || value.isEmpty) {
-                              return 'Kennwort erforderlich';
-                            }
-                            return null;
-                          },
-                        ),
-                        const SizedBox(height: 24),
-                        
-                        // Login Button
-                        SizedBox(
-                          width: double.infinity,
-                          child: FilledButton(
-                            onPressed: widget.isLoading ? null : () {
-                              if (_formKey.currentState!.validate()) {
-                                widget.onLogin(
-                                  _usernameController.text.trim(),
-                                  _passwordController.text,
-                                );
-                              }
-                            },
-                            style: FilledButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(vertical: 16),
-                            ),
-                            child: widget.isLoading
-                                ? const SizedBox(
-                                    height: 20,
-                                    width: 20,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                                    ),
-                                  )
-                                : const Text('Anmelden'),
-                          ),
-              ),
-              const SizedBox(height: 16),
-                        
-                        // Register Link
-                        TextButton(
-                          onPressed: () {
-                            // TODO: Implement registration
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Registrierung noch nicht verfügbar')),
-                            );
-                          },
-                          child: const Text('Sie haben noch kein Konto? Jetzt registrieren'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 /// ---------------- Main Screen ----------------
 class MainScreen extends StatefulWidget {

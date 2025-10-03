@@ -124,6 +124,7 @@ class _MainAppState extends State<MainApp> {
   bool _isLoggedIn = false;
   bool _isLoading = false;
   bool _showLoginWebView = false; // Steuert ob Login-WebView sichtbar ist
+  bool _isLoggingIn = false; // Steuert ob "Logging in..." Screen angezeigt wird
   String? _currentSite;
   List<VehicleItem> _vehicles = [];
   List<SiteItem> _sites = [];
@@ -161,6 +162,21 @@ class _MainAppState extends State<MainApp> {
       ..setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
       ..setNavigationDelegate(
         NavigationDelegate(
+          onPageStarted: (url) {
+            print('Page started loading: $url');
+            
+            // Wenn wir von B2C zu soleco-optimizer.ch wechseln, zeige "Logging in..."
+            if (url.contains('soleco-optimizer.ch') && 
+                !url.contains('b2clogin.com') && 
+                !url.contains('AzureADB2C') && 
+                !url.contains('Account/SignIn') &&
+                !url.contains('signin-oidc')) {
+              
+              print('Login successful - switching to logging in screen');
+              setState(() => _showLoginWebView = false);
+              setState(() => _isLoggingIn = true);
+            }
+          },
           onPageFinished: (url) async {
             print('Login page loaded: $url');
             await _persistCookies(url);
@@ -172,8 +188,8 @@ class _MainAppState extends State<MainApp> {
                 !url.contains('Account/SignIn') &&
                 !url.contains('signin-oidc')) {
               
-              // Login erfolgreich - verstecke WebView und lade Daten
-              setState(() => _showLoginWebView = false);
+              // Login erfolgreich - lade Daten
+              setState(() => _isLoggingIn = false);
               setState(() => _isLoggedIn = true);
               setState(() => _isLoading = true);
               
@@ -181,10 +197,19 @@ class _MainAppState extends State<MainApp> {
               await _copyCookiesToBackground();
               
               // Lade Daten im Hintergrund
+              print('Loading sites...');
               await _loadSites();
+              print('Sites loaded: ${_sites.length}');
+              
+              print('Loading vehicles...');
               await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
-              await Future.delayed(const Duration(seconds: 2));
+              await Future.delayed(const Duration(seconds: 3));
+              
+              // Öffne das Dropdown um Fahrzeuge zu laden
+              await _openVehicleDropdown();
+              await Future.delayed(const Duration(seconds: 1));
               await _loadVehicles();
+              print('Vehicles loaded: ${_vehicles.length}');
               
               setState(() => _isLoading = false);
               
@@ -566,6 +591,56 @@ class _MainAppState extends State<MainApp> {
     }
   }
 
+  // ---------- Fahrzeug-Dropdown öffnen ----------
+  Future<void> _openVehicleDropdown() async {
+    final js = '''
+      (function(){
+        console.log('🔽 Opening vehicle dropdown...');
+        
+        var vehicleSelect = document.getElementById('vehicleSelection');
+        if(!vehicleSelect) {
+          console.log('❌ No vehicleSelection element found');
+          return 'no_element';
+        }
+        
+        // DevExtreme SelectBox öffnen
+        try {
+          if(window.jQuery && jQuery.fn.dxSelectBox){
+            var inst = jQuery(vehicleSelect).dxSelectBox('instance');
+            if(inst){
+              console.log('✅ Found DevExtreme instance, opening dropdown');
+              inst.open();
+              return 'success';
+            }
+          }
+        } catch(e) {
+          console.log('❌ DevExtreme open failed:', e);
+        }
+        
+        // Fallback: Klick auf Dropdown-Button
+        try {
+          var dropdownButton = vehicleSelect.querySelector('.dx-dropdowneditor-button');
+          if(dropdownButton) {
+            console.log('✅ Clicking dropdown button');
+            dropdownButton.click();
+            return 'success_click';
+          }
+        } catch(e) {
+          console.log('❌ Click failed:', e);
+        }
+        
+        console.log('❌ Failed to open dropdown');
+        return 'failed';
+      })();
+    ''';
+    
+    try {
+      await _backgroundController.runJavaScript(js);
+    } catch (e) {
+      print('Error opening vehicle dropdown: $e');
+    }
+  }
+
   // ---------- Fahrzeuge laden ----------
   Future<void> _loadVehicles() async {
     final js = '''
@@ -583,22 +658,35 @@ class _MainAppState extends State<MainApp> {
         
         var vehicles = [];
         
-        // DevExtreme SelectBox
+        // DevExtreme SelectBox - erweiterte Methode
         try {
             if(window.jQuery && jQuery.fn.dxSelectBox){
             var inst = jQuery(vehicleSelect).dxSelectBox('instance');
               if(inst){
               console.log('✅ Found DevExtreme SelectBox instance for vehicles');
               
-              var items = inst.option('items') || inst.option('dataSource');
+              // Versuche verschiedene Datenquellen
+              var items = inst.option('items') || inst.option('dataSource') || inst.option('dataSource.items');
               console.log('Vehicle items/DataSource:', items);
               
               if(Array.isArray(items)){
                 for(var i = 0; i < items.length; i++){
                   var item = items[i];
-                  var label = item.text || item.name || item.label || item.value || ('Vehicle ' + (i+1));
+                  var label = item.text || item.name || item.label || item.value || item.displayValue || ('Vehicle ' + (i+1));
                   vehicles.push({label: label, index: i});
                   console.log('Added vehicle:', label, i);
+                  }
+                } else {
+                  // Versuche dataSource direkt zu lesen
+                  var dataSource = inst.option('dataSource');
+                  if(dataSource && dataSource.items) {
+                    console.log('Found dataSource.items:', dataSource.items);
+                    for(var i = 0; i < dataSource.items.length; i++){
+                      var item = dataSource.items[i];
+                      var label = item.text || item.name || item.label || item.value || item.displayValue || ('Vehicle ' + (i+1));
+                      vehicles.push({label: label, index: i});
+                      console.log('Added vehicle from dataSource:', label, i);
+                    }
                   }
                 }
               }
@@ -607,32 +695,34 @@ class _MainAppState extends State<MainApp> {
           console.log('❌ DevExtreme method failed for vehicles:', e);
         }
         
-        // Fallback: DOM scraping
+        // Fallback: DOM scraping - erweiterte Suche
         if(vehicles.length === 0){
           console.log('🔄 Trying DOM scraping fallback for vehicles...');
           
-          var options = vehicleSelect.querySelectorAll('option');
-          console.log('Found vehicle options:', options.length);
+          // Suche nach Dropdown-Items in der Popup
+          var dropdownItems = document.querySelectorAll('.dx-selectbox-popup .dx-item .dx-item-content, .dx-selectbox-popup .dx-item-content');
+          console.log('Found vehicle dropdown items:', dropdownItems.length);
           
-          for(var i = 0; i < options.length; i++){
-            var opt = options[i];
-            if(opt.textContent.trim()) {
-              vehicles.push({label: opt.textContent.trim(), index: i});
-              console.log('Added vehicle from option:', opt.textContent.trim(), i);
+          for(var i = 0; i < dropdownItems.length; i++){
+            var item = dropdownItems[i];
+            var text = item.textContent.trim();
+            if(text && text !== 'Fahrzeug auswählen') {
+              vehicles.push({label: text, index: i});
+              console.log('Added vehicle from dropdown:', text, i);
             }
           }
           
-          // Fallback: Suche nach Dropdown-Items
+          // Fallback: Suche nach allen möglichen Optionen
           if(vehicles.length === 0) {
-            var dropdownItems = document.querySelectorAll('.dx-selectbox-popup .dx-item .dx-item-content');
-            console.log('Found vehicle dropdown items:', dropdownItems.length);
+            var allOptions = document.querySelectorAll('option, .dx-item, [role="option"]');
+            console.log('Found all options:', allOptions.length);
             
-            for(var i = 0; i < dropdownItems.length; i++){
-              var item = dropdownItems[i];
-              var text = item.textContent.trim();
-              if(text) {
+            for(var i = 0; i < allOptions.length; i++){
+              var opt = allOptions[i];
+              var text = opt.textContent.trim();
+              if(text && text !== 'Fahrzeug auswählen' && text.length > 0) {
                 vehicles.push({label: text, index: i});
-                console.log('Added vehicle from dropdown:', text, i);
+                console.log('Added vehicle from option:', text, i);
               }
             }
           }
@@ -777,30 +867,104 @@ class _MainAppState extends State<MainApp> {
 
   // ---------- Logout ----------
   Future<void> _logout() async {
-                await storage.delete(key: _kUser);
-                await storage.delete(key: _kPass);
-                await storage.delete(key: _kCookieStore);
-    await storage.delete(key: _kSelectedSite);
-    await _backgroundController.clearCache();
-    await _loginController.clearCache();
-    
-    setState(() {
-      _isLoggedIn = false;
-      _showLoginWebView = false;
-      _vehicles.clear();
-      _sites.clear();
-      _currentSite = null;
-    });
-    
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Abgemeldet')),
-      );
+    try {
+      // Verwende den echten SignOut-Link der Webseite (im Hintergrund)
+      await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/Account/SignOut'));
+      
+      // SOFORT zur Login-WebView wechseln (ohne Warten)
+      setState(() {
+        _isLoggedIn = false;
+        _showLoginWebView = true;
+        _isLoggingIn = false;
+        _vehicles.clear();
+        _sites.clear();
+        _currentSite = null;
+      });
+      
+      // Lösche alle lokalen Daten
+      await storage.delete(key: _kUser);
+      await storage.delete(key: _kPass);
+      await storage.delete(key: _kCookieStore);
+      await storage.delete(key: _kSelectedSite);
+      await _backgroundController.clearCache();
+      await _loginController.clearCache();
+      
+      // Lade Login-Seite in der WebView
+      await _loginController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Abgemeldet')),
+        );
+      }
+    } catch (e) {
+      print('Logout error: $e');
+      // Fallback: Lokale Abmeldung auch bei Fehler
+      await storage.delete(key: _kUser);
+      await storage.delete(key: _kPass);
+      await storage.delete(key: _kCookieStore);
+      await storage.delete(key: _kSelectedSite);
+      await _backgroundController.clearCache();
+      await _loginController.clearCache();
+      
+      setState(() {
+        _isLoggedIn = false;
+        _showLoginWebView = true;
+        _isLoggingIn = false;
+        _vehicles.clear();
+        _sites.clear();
+        _currentSite = null;
+      });
+      
+      // Lade Login-Seite auch bei Fehler
+      await _loginController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Zeige "Logging in..." Screen wenn Login erfolgreich aber noch Daten laden
+    if (_isLoggingIn) {
+      return Scaffold(
+        body: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Brand.primary, Brand.primaryDark],
+            ),
+          ),
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  'Logging in...',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Bitte warten Sie während der Anmeldung',
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
     // Zeige Login-WebView wenn Login aktiv ist (ohne AppBar/X-Button)
     if (_showLoginWebView) {
       return Scaffold(

@@ -70,8 +70,9 @@ class _WebShellState extends State<WebShell> {
   
   // State variables
   bool _loading = false;
-  bool _showStartMenu = true;
+  bool _showStartMenu = false; // Startet versteckt - nur nach Login
   bool _didAutoLogin = false;
+  bool _isLoggedIn = false; // Login-Status verfolgen
   Timer? _vehicleMonitor;
   String? _lastVehicleStatus;
   
@@ -127,12 +128,14 @@ class _WebShellState extends State<WebShell> {
                 await _autoLoginB2C();
               }
               await _persistCookies(url);
+              setState(() => _isLoggedIn = false); // Nicht eingeloggt
               return;
             }
 
-            // Vehicle-Appointments / Views -> Cookies sichern
+            // Vehicle-Appointments / Views -> Eingeloggt
             if (url.contains('/VehicleAppointments') || url.contains('/Views')) {
               await _persistCookies(url);
+              setState(() => _isLoggedIn = true); // Eingeloggt
               return;
             }
 
@@ -397,14 +400,14 @@ class _WebShellState extends State<WebShell> {
     }
   }
 
-  // Vehicle Selection
+  // Vehicle Selection - Verbesserte Suche
   Future<List<Map<String, dynamic>>> _scanVehicles() async {
     try {
       final result = await _main.runJavaScriptReturningResult('''
         (function(){
           var vehicles = [];
           
-          // DevExtreme SelectBox suchen
+          // 1. DevExtreme SelectBox suchen
           var selectBoxes = document.querySelectorAll('[data-role="selectbox"]');
           for(var i = 0; i < selectBoxes.length; i++) {
             var sb = selectBoxes[i];
@@ -418,6 +421,46 @@ class _WebShellState extends State<WebShell> {
                   value: item.value || item.id || j,
                   index: j
                 });
+              }
+            }
+          }
+          
+          // 2. Fallback: Suche nach Select-Elementen
+          if(vehicles.length === 0) {
+            var selects = document.querySelectorAll('select');
+            for(var i = 0; i < selects.length; i++) {
+              var select = selects[i];
+              var options = select.querySelectorAll('option');
+              for(var j = 0; j < options.length; j++) {
+                var option = options[j];
+                if(option.value && option.textContent.trim()) {
+                  vehicles.push({
+                    text: option.textContent.trim(),
+                    value: option.value,
+                    index: j
+                  });
+                }
+              }
+            }
+          }
+          
+          // 3. Fallback: Suche nach Dropdown-ähnlichen Elementen
+          if(vehicles.length === 0) {
+            var dropdowns = document.querySelectorAll('[class*="dropdown"], [class*="select"], [class*="vehicle"]');
+            for(var i = 0; i < dropdowns.length; i++) {
+              var dropdown = dropdowns[i];
+              var items = dropdown.querySelectorAll('[data-value], [data-id], option, li');
+              for(var j = 0; j < items.length; j++) {
+                var item = items[j];
+                var text = item.textContent ? item.textContent.trim() : '';
+                var value = item.getAttribute('data-value') || item.getAttribute('data-id') || item.value || j;
+                if(text && text.length > 0) {
+                  vehicles.push({
+                    text: text,
+                    value: value,
+                    index: j
+                  });
+                }
               }
             }
           }
@@ -441,6 +484,7 @@ class _WebShellState extends State<WebShell> {
     try {
       final js = '''
         (function(){
+          // 1. DevExtreme SelectBox
           var selectBoxes = document.querySelectorAll('[data-role="selectbox"]');
           for(var i = 0; i < selectBoxes.length; i++) {
             var sb = selectBoxes[i];
@@ -455,6 +499,17 @@ class _WebShellState extends State<WebShell> {
               return true;
             }
           }
+          
+          // 2. Fallback: Normale Select-Elemente
+          var selects = document.querySelectorAll('select');
+          for(var i = 0; i < selects.length; i++) {
+            var select = selects[i];
+            select.selectedIndex = ${vehicle['index']};
+            select.value = '${vehicle['value']}';
+            select.dispatchEvent(new Event('change', {bubbles: true}));
+            return true;
+          }
+          
           return false;
         })();
       ''';
@@ -562,19 +617,46 @@ class _WebShellState extends State<WebShell> {
       return;
     }
 
-    // Fahrzeug-Scanning
-    final vehicles = await _scanVehicles();
+    // Warten bis Seite geladen ist
+    await Future.delayed(const Duration(seconds: 3));
+
+    // Fahrzeug-Scanning mit mehreren Versuchen
+    List<Map<String, dynamic>> vehicles = [];
+    for (int attempt = 0; attempt < 3; attempt++) {
+      vehicles = await _scanVehicles();
+      if (vehicles.isNotEmpty) break;
+      await Future.delayed(const Duration(seconds: 2));
+    }
+
     if (vehicles.isEmpty) {
       setState(() => _showStartMenu = true);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Keine Fahrzeuge gefunden')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Keine Fahrzeuge gefunden. Bitte versuchen Sie es später erneut.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
       return;
     }
 
     // Fahrzeug auswählen (erstes verfügbares)
     final selectedVehicle = vehicles.first;
-    await _selectVehicle(selectedVehicle);
+    final success = await _selectVehicle(selectedVehicle);
+    
+    if (!success) {
+      setState(() => _showStartMenu = true);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Fahrzeug konnte nicht ausgewählt werden.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
     
     // Fahrzeugdaten laden
     final vehicleData = await _loadVehicleData();
@@ -631,7 +713,10 @@ class _WebShellState extends State<WebShell> {
         await Future.delayed(const Duration(milliseconds: 1000));
         await _main.loadRequest(Uri.parse(startVehicleUrl));
         _didAutoLogin = false;
-        setState(() => _showStartMenu = true);
+        setState(() {
+          _isLoggedIn = false;
+          _showStartMenu = false; // Verstecken nach Logout
+        });
         break;
     }
   }
@@ -642,11 +727,13 @@ class _WebShellState extends State<WebShell> {
       appBar: AppBar(
         title: const Text('Soleco Optimizer'),
         actions: [
-          IconButton(
-            tooltip: 'Startmenü',
-            onPressed: () => setState(() => _showStartMenu = !_showStartMenu),
-            icon: const Icon(Icons.local_florist_outlined, color: Brand.primary),
-          ),
+          // Nur Startmenü-Button anzeigen wenn eingeloggt
+          if (_isLoggedIn)
+            IconButton(
+              tooltip: 'Startmenü',
+              onPressed: () => setState(() => _showStartMenu = !_showStartMenu),
+              icon: const Icon(Icons.local_florist_outlined, color: Brand.primary),
+            ),
           PopupMenuButton<String>(
             onSelected: _handleMenuAction,
             itemBuilder: (c) => const [
@@ -669,16 +756,18 @@ class _WebShellState extends State<WebShell> {
             ),
         ],
       ),
-      floatingActionButton: _showStartMenu
-          ? null
-          : FloatingActionButton.extended(
+      // Nur FloatingActionButton anzeigen wenn eingeloggt und StartMenu versteckt
+      floatingActionButton: (_isLoggedIn && !_showStartMenu)
+          ? FloatingActionButton.extended(
               onPressed: () => setState(() => _showStartMenu = true),
               backgroundColor: Brand.primary,
               foregroundColor: Colors.white,
               icon: const Icon(Icons.home),
               label: const Text('Start'),
-            ),
-      bottomSheet: _showStartMenu
+            )
+          : null,
+      // Nur StartMenu anzeigen wenn eingeloggt
+      bottomSheet: (_isLoggedIn && _showStartMenu)
           ? DraggableScrollableSheet(
               initialChildSize: 0.35,
               minChildSize: 0.2,

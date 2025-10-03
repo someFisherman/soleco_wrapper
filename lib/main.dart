@@ -160,33 +160,51 @@ class _MainAppState extends State<MainApp> {
       ..setBackgroundColor(Colors.white)
       ..enableZoom(false)
       ..setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+      ..addJavaScriptChannel('showLoggingIn', onMessageReceived: (message) {
+        print('🎯 JavaScript Channel received: $message');
+        setState(() {
+          _showLoginWebView = false;
+          _isLoggingIn = true;
+        });
+      })
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
-            print('Page started loading: $url');
+            print('🔍 Page started loading: $url');
             
             // Wenn wir von B2C zu soleco-optimizer.ch wechseln, zeige "Logging in..."
             if (url.contains('soleco-optimizer.ch') && 
                 !url.contains('b2clogin.com') && 
                 !url.contains('AzureADB2C') && 
                 !url.contains('Account/SignIn') &&
-                !url.contains('signin-oidc')) {
+                !url.contains('signin-oidc') &&
+                !url.contains('MicrosoftIdentity')) {
               
-              print('Login successful - switching to logging in screen');
+              print('✅ Login successful - switching to logging in screen');
               setState(() => _showLoginWebView = false);
               setState(() => _isLoggingIn = true);
+            } else {
+              print('❌ Still on login page or redirect page');
             }
           },
           onPageFinished: (url) async {
             print('Login page loaded: $url');
             await _persistCookies(url);
             
+            // JavaScript Event-Listener für sofortigen UI-Wechsel injizieren
+            await _injectLoginButtonListener();
+            
             // Prüfe ob Login erfolgreich war - erweiterte Erkennung
             if (url.contains('soleco-optimizer.ch') && 
                 !url.contains('b2clogin.com') && 
                 !url.contains('AzureADB2C') && 
                 !url.contains('Account/SignIn') &&
-                !url.contains('signin-oidc')) {
+                !url.contains('signin-oidc') &&
+                !url.contains('MicrosoftIdentity') &&
+                (url.contains('/VehicleAppointments') || 
+                 url.contains('/Views') || 
+                 url.contains('/Dashboard') ||
+                 url.contains('/Settings'))) {
               
               // Login erfolgreich - lade Daten
               setState(() => _isLoggingIn = false);
@@ -232,6 +250,72 @@ class _MainAppState extends State<MainApp> {
     // Starte direkt mit Login-WebView
     setState(() => _showLoginWebView = true);
     await _loginController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
+  }
+
+  // ---------- JavaScript Event-Listener für Login-Button ----------
+  Future<void> _injectLoginButtonListener() async {
+    try {
+      await _loginController.runJavaScript('''
+        (function() {
+          console.log('🎯 Injecting login button listener...');
+          
+          // Entferne alte Event-Listener falls vorhanden
+          if (window.loginButtonListener) {
+            document.removeEventListener('click', window.loginButtonListener);
+          }
+          
+          // Neuer Event-Listener für alle Klicks
+          window.loginButtonListener = function(e) {
+            var target = e.target;
+            var text = target.textContent || target.value || '';
+            var type = target.type || '';
+            var className = target.className || '';
+            var id = target.id || '';
+            
+            console.log('🔍 Click detected:', {
+              text: text,
+              type: type,
+              className: className,
+              id: id
+            });
+            
+            // Prüfe auf Login-Button-Indikatoren
+            var isLoginButton = (
+              text.toLowerCase().includes('anmelden') || 
+              text.toLowerCase().includes('sign in') ||
+              text.toLowerCase().includes('login') ||
+              text.toLowerCase().includes('einloggen') ||
+              type === 'submit' ||
+              className.toLowerCase().includes('login') ||
+              className.toLowerCase().includes('signin') ||
+              id.toLowerCase().includes('login') ||
+              id.toLowerCase().includes('signin') ||
+              target.closest('form') !== null
+            );
+            
+            if (isLoginButton) {
+              console.log('✅ Login button clicked - triggering immediate UI switch');
+              
+              // SOFORTIGER UI-Wechsel über JavaScript Channel
+              if (window.showLoggingIn) {
+                window.showLoggingIn.postMessage('show');
+              }
+              
+              // Verhindere weitere Event-Propagation
+              e.stopImmediatePropagation();
+              return false;
+            }
+          };
+          
+          // Event-Listener hinzufügen (capture phase für frühere Erkennung)
+          document.addEventListener('click', window.loginButtonListener, true);
+          
+          console.log('✅ Login button listener injected successfully');
+        })();
+      ''');
+    } catch (e) {
+      print('Error injecting login button listener: $e');
+    }
   }
 
   // ---------- Cookies ----------
@@ -1020,6 +1104,48 @@ class _MainAppState extends State<MainApp> {
     if (!_isLoggedIn) {
       return Scaffold(
         body: WebViewWidget(controller: _loginController),
+      );
+    }
+
+    // Zusätzliche Sicherheit: Falls irgendwie die Webseite sichtbar wird
+    if (_isLoggedIn && _vehicles.isEmpty && _sites.isEmpty) {
+      return Scaffold(
+        body: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Brand.primary, Brand.primaryDark],
+            ),
+          ),
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const CircularProgressIndicator(
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  'Lade Daten...',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Bitte warten Sie',
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       );
     }
 

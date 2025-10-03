@@ -120,8 +120,10 @@ class _MainAppState extends State<MainApp> {
   final cookieMgr = WebviewCookieManager();
 
   late final WebViewController _backgroundController; // Komplett unsichtbarer Controller
+  late final WebViewController _loginController; // Sichtbarer Controller für Login
   bool _isLoggedIn = false;
   bool _isLoading = false;
+  bool _showLoginWebView = false; // Steuert ob Login-WebView sichtbar ist
   String? _currentSite;
   List<VehicleItem> _vehicles = [];
   List<SiteItem> _sites = [];
@@ -130,6 +132,7 @@ class _MainAppState extends State<MainApp> {
   void initState() {
     super.initState();
     _initBackgroundController();
+    _initLoginController();
     _checkLoginStatus();
   }
 
@@ -150,6 +153,54 @@ class _MainAppState extends State<MainApp> {
       );
   }
 
+  void _initLoginController() {
+    _loginController = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(Colors.white)
+      ..enableZoom(false)
+      ..setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (url) async {
+            print('Login page loaded: $url');
+            await _persistCookies(url);
+            
+            // Prüfe ob Login erfolgreich war
+            if (url.contains('soleco-optimizer.ch') && 
+                !url.contains('b2clogin.com') && 
+                !url.contains('AzureADB2C') && 
+                !url.contains('Account/SignIn')) {
+              
+              // Login erfolgreich - verstecke WebView und lade Daten
+              setState(() => _showLoginWebView = false);
+              setState(() => _isLoggedIn = true);
+              setState(() => _isLoading = true);
+              
+              // Kopiere Cookies zum Background Controller
+              await _copyCookiesToBackground();
+              
+              // Lade Daten im Hintergrund
+              await _loadSites();
+              await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
+              await Future.delayed(const Duration(seconds: 2));
+              await _loadVehicles();
+              
+              setState(() => _isLoading = false);
+              
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Erfolgreich eingeloggt!'),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              }
+            }
+          },
+        ),
+      );
+  }
+
   Future<void> _checkLoginStatus() async {
     final user = await storage.read(key: _kUser);
     final pass = await storage.read(key: _kPass);
@@ -158,13 +209,15 @@ class _MainAppState extends State<MainApp> {
       setState(() => _isLoading = true);
       try {
         await _restoreCookies();
-        // Lade Login-Seite über B2C (im Hintergrund)
-        await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
         
-        // Warte und prüfe mehrfach ob wir automatisch eingeloggt sind
+        // Versuche Auto-Login mit sichtbarer WebView
+        setState(() => _showLoginWebView = true);
+        await _loginController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
+        
+        // Warte und prüfe ob wir automatisch eingeloggt sind
         bool loginSuccess = false;
         int attempts = 0;
-        const maxAttempts = 4; // 4 Versuche über 20 Sekunden
+        const maxAttempts = 3; // 3 Versuche über 15 Sekunden
         
         while (attempts < maxAttempts && !loginSuccess) {
           attempts++;
@@ -179,8 +232,10 @@ class _MainAppState extends State<MainApp> {
         }
         
         if (loginSuccess) {
-          // Auto-Login erfolgreich - wechsle sofort zur Hauptseite
+          // Auto-Login erfolgreich - verstecke WebView und lade Daten
+          setState(() => _showLoginWebView = false);
           setState(() => _isLoggedIn = true);
+          await _copyCookiesToBackground();
           await _loadSites();
           await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
           await Future.delayed(const Duration(seconds: 2));
@@ -189,6 +244,7 @@ class _MainAppState extends State<MainApp> {
         } else {
           // Automatisches Login fehlgeschlagen - zeige Login-Screen
           print('Auto-login failed after $maxAttempts attempts');
+          setState(() => _showLoginWebView = false);
           setState(() => _isLoggedIn = false);
           setState(() => _isLoading = false);
           // Lösche alte Credentials
@@ -198,6 +254,7 @@ class _MainAppState extends State<MainApp> {
         }
       } catch (e) {
         print('Auto-login error: $e');
+        setState(() => _showLoginWebView = false);
         setState(() => _isLoggedIn = false);
         setState(() => _isLoading = false);
       }
@@ -205,6 +262,19 @@ class _MainAppState extends State<MainApp> {
   }
 
   // ---------- Cookies ----------
+  Future<void> _copyCookiesToBackground() async {
+    try {
+      // Kopiere alle Cookies vom Login-Controller zum Background-Controller
+      final cookies = await cookieMgr.getCookies('https://soleco-optimizer.ch');
+      for (final cookie in cookies) {
+        await cookieMgr.setCookies([cookie]);
+      }
+      print('Cookies copied to background controller');
+    } catch (e) {
+      print('Error copying cookies: $e');
+    }
+  }
+
   Future<void> _restoreCookies() async {
     final raw = await storage.read(key: _kCookieStore);
     if (raw == null) return;
@@ -263,11 +333,9 @@ class _MainAppState extends State<MainApp> {
 
   // ---------- Login ----------
   Future<void> _performLogin(String username, String password) async {
-    // SOFORT Loading-Screen anzeigen
-    setState(() => _isLoading = true);
-    
     try {
       // Lösche alte Cookies um sicherzustellen, dass wir nicht mit alten Sessions arbeiten
+      await _loginController.clearCache();
       await _backgroundController.clearCache();
       await storage.delete(key: _kCookieStore);
       
@@ -275,77 +343,13 @@ class _MainAppState extends State<MainApp> {
       await storage.write(key: _kUser, value: username);
       await storage.write(key: _kPass, value: password);
       
-      // Lade Login-Seite über B2C (im Hintergrund)
-      await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
-      
-      // Warte auf Login-Seite und führe Auto-Login durch
-      await Future.delayed(const Duration(seconds: 2));
-      await _autoLoginB2C();
-      
-      // Warte länger und prüfe mehrfach ob Login erfolgreich war
-      bool loginSuccess = false;
-      int attempts = 0;
-      const maxAttempts = 6; // 6 Versuche über 30 Sekunden
-      
-      while (attempts < maxAttempts && !loginSuccess) {
-        attempts++;
-        print('Login verification attempt $attempts/$maxAttempts');
-        
-        await Future.delayed(const Duration(seconds: 5));
-        loginSuccess = await _verifyLogin();
-        
-        if (!loginSuccess && attempts < maxAttempts) {
-          print('Login verification failed, retrying in 5 seconds...');
-        }
-      }
-      
-      if (loginSuccess) {
-        // Login erfolgreich - wechsle sofort zur Hauptseite
-        setState(() => _isLoggedIn = true);
-        
-        // Lade Sites und Fahrzeuge im Hintergrund
-        await _loadSites();
-        await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
-        await Future.delayed(const Duration(seconds: 2));
-        await _loadVehicles();
-        
-        // Loading beenden - Hauptseite wird angezeigt
-        setState(() => _isLoading = false);
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Erfolgreich eingeloggt!'),
-              backgroundColor: Colors.green,
-            ),
-          );
-        }
-      } else {
-        // Login fehlgeschlagen - zurück zum Login-Screen
-        print('Login failed after $maxAttempts attempts');
-        setState(() => _isLoggedIn = false);
-        setState(() => _isLoading = false);
-        
-        // Lösche gespeicherte Credentials bei fehlgeschlagenem Login
-        await storage.delete(key: _kUser);
-        await storage.delete(key: _kPass);
-        await storage.delete(key: _kCookieStore);
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Login fehlgeschlagen - bitte prüfen Sie Ihre Anmeldedaten'),
-              backgroundColor: Colors.red,
-              duration: Duration(seconds: 5),
-            ),
-          );
-        }
-      }
+      // Zeige Login-WebView und lade Login-Seite
+      setState(() => _showLoginWebView = true);
+      await _loginController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
       
     } catch (e) {
       print('Login error: $e');
-      setState(() => _isLoggedIn = false);
-      setState(() => _isLoading = false);
+      setState(() => _showLoginWebView = false);
       
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -463,136 +467,6 @@ class _MainAppState extends State<MainApp> {
     }
   }
 
-  Future<void> _autoLoginB2C() async {
-    final user = await storage.read(key: _kUser);
-    final pass = await storage.read(key: _kPass);
-    if (user == null || pass == null) return;
-    
-    final esc = (String s) =>
-        s.replaceAll(r'\', r'\\').replaceAll("'", r"\'").replaceAll('`', r'\`');
-
-    final js = '''
-      (function(){
-        console.log('🔐 Starting B2C auto-login...');
-        console.log('Current URL:', window.location.href);
-        
-        function setVal(el,val){
-          if(!el) return false;
-          el.focus(); 
-          el.value=val;
-          try{
-            // Trigger alle möglichen Events
-            el.dispatchEvent(new Event('input',{bubbles:true}));
-            el.dispatchEvent(new Event('change',{bubbles:true}));
-            el.dispatchEvent(new Event('keyup',{bubbles:true}));
-            el.dispatchEvent(new Event('blur',{bubbles:true}));
-            
-            // Zusätzliche Events für B2C
-            var inputEvent = new Event('input', { bubbles: true, cancelable: true });
-            el.dispatchEvent(inputEvent);
-            
-            var changeEvent = new Event('change', { bubbles: true, cancelable: true });
-            el.dispatchEvent(changeEvent);
-          }catch(e){
-            console.log('Event error:', e);
-          }
-          return true;
-        }
-        
-        function tryLogin(){
-          // Suche nach den B2C Login-Elementen
-          var u=document.getElementById('UserId');
-          var p=document.getElementById('password');
-          var btn=document.getElementById('next');
-          
-          console.log('B2C Login elements found:', {
-            username: !!u,
-            password: !!p,
-            button: !!btn,
-            form: !!document.getElementById('localAccountForm')
-          });
-          
-          if(u&&p&&btn){
-            console.log('Setting B2C credentials...');
-            
-            // Setze Werte mit mehreren Methoden
-            setVal(u,'${esc(user)}');
-            setVal(p,'${esc(pass)}');
-            
-            // Warte kurz
-            setTimeout(function(){
-              // Prüfe ob die Werte wirklich gesetzt wurden
-              var usernameSet = u.value === '${esc(user)}';
-              var passwordSet = p.value === '${esc(pass)}';
-              
-              console.log('B2C Credentials set:', {
-                username: usernameSet,
-                password: passwordSet,
-                usernameValue: u.value,
-                passwordLength: p.value.length
-              });
-              
-              if (usernameSet && passwordSet) {
-                console.log('Clicking B2C login button...');
-                
-                // Versuche verschiedene Click-Methoden
-                try {
-            btn.click();
-                } catch(e) {
-                  console.log('Click error:', e);
-                  // Fallback: Form submit
-                  var form = document.getElementById('localAccountForm');
-                  if (form) {
-                    form.submit();
-                  }
-                }
-                return true;
-              } else {
-                console.log('❌ Failed to set B2C credentials properly');
-                return false;
-              }
-            }, 100);
-            
-            return true;
-          }
-          return false;
-        }
-        
-        // Warte bis die Seite vollständig geladen ist
-        function startLoginAttempt() {
-          console.log('🚀 Starting B2C login attempt...');
-          
-          // Versuche sofort
-          if (tryLogin()) {
-            console.log('✅ Login attempt started immediately');
-            return;
-          }
-          
-          // Fallback: Retry-Mechanismus mit längerer Wartezeit
-          console.log('🔄 Starting retry mechanism...');
-          var tries=0;
-          var t=setInterval(function(){ 
-            tries++; 
-            console.log('Retry attempt', tries);
-            
-            if(tryLogin()||tries>30){ // Mehr Versuche
-              clearInterval(t);
-              console.log('B2C Login attempt finished after', tries, 'tries');
-            } 
-          },500); // Längere Wartezeit zwischen Versuchen
-        }
-        
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(startLoginAttempt, 1000);
-          });
-        } else {
-          setTimeout(startLoginAttempt, 1000);
-        }
-      })();
-    ''';
-    await _backgroundController.runJavaScript(js);
-  }
 
   // ---------- Sites laden ----------
   Future<void> _loadSites() async {
@@ -990,9 +864,11 @@ class _MainAppState extends State<MainApp> {
                 await storage.delete(key: _kCookieStore);
     await storage.delete(key: _kSelectedSite);
     await _backgroundController.clearCache();
+    await _loginController.clearCache();
     
     setState(() {
       _isLoggedIn = false;
+      _showLoginWebView = false;
       _vehicles.clear();
       _sites.clear();
       _currentSite = null;
@@ -1007,7 +883,25 @@ class _MainAppState extends State<MainApp> {
 
   @override
   Widget build(BuildContext context) {
-    // Zeige Loading-Screen beim App-Start oder während Login
+    // Zeige Login-WebView wenn Login aktiv ist
+    if (_showLoginWebView) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Anmeldung'),
+          backgroundColor: Brand.primary,
+          foregroundColor: Colors.white,
+          leading: IconButton(
+            icon: const Icon(Icons.close),
+            onPressed: () {
+              setState(() => _showLoginWebView = false);
+            },
+          ),
+        ),
+        body: WebViewWidget(controller: _loginController),
+      );
+    }
+
+    // Zeige Loading-Screen beim App-Start oder während Datenladen
     if (_isLoading) {
       return Scaffold(
         body: Container(
@@ -1051,8 +945,8 @@ class _MainAppState extends State<MainApp> {
     );
   }
 
-    // Zusätzliche Sicherheitsprüfung: Nur bei wirklich eingeloggtem Zustand zur Hauptseite
-    if (!_isLoggedIn || _vehicles.isEmpty) {
+    // Zeige Login-Screen wenn nicht eingeloggt
+    if (!_isLoggedIn) {
       return LoginScreen(onLogin: _performLogin, isLoading: false);
     }
 

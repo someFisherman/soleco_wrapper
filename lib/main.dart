@@ -137,6 +137,8 @@ class _MainAppState extends State<MainApp> {
     _backgroundController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0x00000000))
+      ..enableZoom(false)
+      ..setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageFinished: (url) async {
@@ -162,8 +164,8 @@ class _MainAppState extends State<MainApp> {
       setState(() => _isLoading = true);
       try {
         await _restoreCookies();
-        // Lade zuerst Views-Seite für Site-Auswahl
-        await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/Views'));
+        // Lade Login-Seite über B2C
+        await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
         
         // Warte und prüfe ob wir automatisch eingeloggt sind
         await Future.delayed(const Duration(seconds: 3));
@@ -259,8 +261,8 @@ class _MainAppState extends State<MainApp> {
       await storage.write(key: _kUser, value: username);
       await storage.write(key: _kPass, value: password);
       
-      // Lade Login-Seite (Views für Site-Auswahl)
-      await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/Views'));
+      // Lade Login-Seite über B2C
+      await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
       
       // Warte auf Login-Seite und führe Auto-Login durch
       await Future.delayed(const Duration(seconds: 2));
@@ -323,10 +325,11 @@ class _MainAppState extends State<MainApp> {
           console.log('🔍 Verifying login...');
           console.log('Current URL:', window.location.href);
           
-          // Prüfe ob wir auf der Login-Seite sind (dann ist Login fehlgeschlagen)
+          // Prüfe ob wir auf der B2C Login-Seite sind (dann ist Login fehlgeschlagen)
           var loginForm = document.getElementById('localAccountForm');
-          if (loginForm) {
-            console.log('❌ Still on login page - login failed');
+          var b2cLogin = url.includes('b2clogin.com') || url.includes('AzureADB2C');
+          if (loginForm || b2cLogin) {
+            console.log('❌ Still on B2C login page - login failed');
             return false;
           }
           
@@ -407,66 +410,111 @@ class _MainAppState extends State<MainApp> {
 
     final js = '''
       (function(){
-        console.log('🔐 Starting auto-login...');
+        console.log('🔐 Starting B2C auto-login...');
+        console.log('Current URL:', window.location.href);
         
         function setVal(el,val){
           if(!el) return false;
-          el.focus(); el.value=val;
+          el.focus(); 
+          el.value=val;
           try{
+            // Trigger alle möglichen Events
             el.dispatchEvent(new Event('input',{bubbles:true}));
             el.dispatchEvent(new Event('change',{bubbles:true}));
-            var ev=document.createEvent('HTMLEvents'); ev.initEvent('keyup',true,false); el.dispatchEvent(ev);
-          }catch(e){}
+            el.dispatchEvent(new Event('keyup',{bubbles:true}));
+            el.dispatchEvent(new Event('blur',{bubbles:true}));
+            
+            // Zusätzliche Events für B2C
+            var inputEvent = new Event('input', { bubbles: true, cancelable: true });
+            el.dispatchEvent(inputEvent);
+            
+            var changeEvent = new Event('change', { bubbles: true, cancelable: true });
+            el.dispatchEvent(changeEvent);
+          }catch(e){
+            console.log('Event error:', e);
+          }
           return true;
         }
         
         function tryLogin(){
+          // Suche nach den B2C Login-Elementen
           var u=document.getElementById('UserId');
           var p=document.getElementById('password');
           var btn=document.getElementById('next');
           
-          console.log('Login elements found:', {
+          console.log('B2C Login elements found:', {
             username: !!u,
             password: !!p,
-            button: !!btn
+            button: !!btn,
+            form: !!document.getElementById('localAccountForm')
           });
           
           if(u&&p&&btn){
-            console.log('Setting credentials...');
+            console.log('Setting B2C credentials...');
+            
+            // Setze Werte mit mehreren Methoden
             setVal(u,'${esc(user)}');
             setVal(p,'${esc(pass)}');
             
-            // Prüfe ob die Werte wirklich gesetzt wurden
-            var usernameSet = u.value === '${esc(user)}';
-            var passwordSet = p.value === '${esc(pass)}';
-            
-            console.log('Credentials set:', {
-              username: usernameSet,
-              password: passwordSet
-            });
-            
-            if (usernameSet && passwordSet) {
-              console.log('Clicking login button...');
+            // Warte kurz
+            setTimeout(function(){
+              // Prüfe ob die Werte wirklich gesetzt wurden
+              var usernameSet = u.value === '${esc(user)}';
+              var passwordSet = p.value === '${esc(pass)}';
+              
+              console.log('B2C Credentials set:', {
+                username: usernameSet,
+                password: passwordSet,
+                usernameValue: u.value,
+                passwordLength: p.value.length
+              });
+              
+              if (usernameSet && passwordSet) {
+                console.log('Clicking B2C login button...');
+                
+                // Versuche verschiedene Click-Methoden
+                try {
             btn.click();
+                } catch(e) {
+                  console.log('Click error:', e);
+                  // Fallback: Form submit
+                  var form = document.getElementById('localAccountForm');
+                  if (form) {
+                    form.submit();
+                  }
+                }
+                return true;
+              } else {
+                console.log('❌ Failed to set B2C credentials properly');
+                return false;
+              }
+            }, 100);
+            
             return true;
-            } else {
-              console.log('❌ Failed to set credentials properly');
-              return false;
-            }
           }
           return false;
         }
         
+        // Warte bis die Seite vollständig geladen ist
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(tryLogin, 500);
+          });
+        } else {
+          setTimeout(tryLogin, 500);
+        }
+        
+        // Fallback: Retry-Mechanismus
         if(!tryLogin()){
-          console.log('🔄 Retrying login...');
+          console.log('🔄 Retrying B2C login...');
           var tries=0;
           var t=setInterval(function(){ 
             tries++; 
-            if(tryLogin()||tries>50){
+            if(tryLogin()||tries>30){
               clearInterval(t);
-              console.log('Login attempt finished after', tries, 'tries');
+              console.log('B2C Login attempt finished after', tries, 'tries');
             } 
-          },100);
+          },200);
         }
       })();
     ''';

@@ -1067,7 +1067,8 @@ class _WebShellState extends State<WebShell> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => FullscreenChargingDialog(
+      builder: (context) => ChargingSheet(
+        defaultMinutes: 180,
         webViewController: _main,
         onStart: (minutes) async {
           await _triggerParameters(minutes);
@@ -1080,20 +1081,6 @@ class _WebShellState extends State<WebShell> {
           // Warte kurz damit die WebView-Daten aktualisiert werden
           await Future.delayed(const Duration(milliseconds: 1500));
           print('🔄 Vehicle changed - data should be refreshed');
-        },
-        onBack: () {
-          Navigator.of(context).pop();
-          _exitFullscreen();
-        },
-        onNavigateToViews: () async {
-          Navigator.of(context).pop();
-          await _navigateToBackground(startViewsUrl);
-          _openFullscreenCharging(); // Öffne Charging Interface wieder
-        },
-        onNavigateToSettings: () async {
-          Navigator.of(context).pop();
-          await _navigateToBackground(settingsUrl);
-          _openFullscreenCharging(); // Öffne Charging Interface wieder
         },
       ),
     );

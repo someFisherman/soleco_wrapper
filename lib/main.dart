@@ -119,7 +119,7 @@ class _MainAppState extends State<MainApp> {
   final storage = const FlutterSecureStorage();
   final cookieMgr = WebviewCookieManager();
 
-  late final WebViewController _backgroundController; // Unsichtbarer Controller
+  late final WebViewController _backgroundController; // Komplett unsichtbarer Controller
   bool _isLoggedIn = false;
   bool _isLoading = false;
   String? _currentSite;
@@ -144,13 +144,7 @@ class _MainAppState extends State<MainApp> {
           onPageFinished: (url) async {
             print('Background page loaded: $url');
               await _persistCookies(url);
-
-            // Prüfe ob wir eingeloggt sind
-            if (url.contains('/VehicleAppointments') || url.contains('/Views')) {
-              setState(() => _isLoggedIn = true);
-              await _loadSites();
-              await _loadVehicles();
-            }
+            // WebView läuft nur noch im Hintergrund - keine UI-Updates mehr
           },
         ),
       );
@@ -164,23 +158,39 @@ class _MainAppState extends State<MainApp> {
       setState(() => _isLoading = true);
       try {
         await _restoreCookies();
-        // Lade Login-Seite über B2C
+        // Lade Login-Seite über B2C (im Hintergrund)
         await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
         
-        // Warte und prüfe ob wir automatisch eingeloggt sind
-        await Future.delayed(const Duration(seconds: 4));
-        final loginSuccess = await _verifyLogin();
+        // Warte und prüfe mehrfach ob wir automatisch eingeloggt sind
+        bool loginSuccess = false;
+        int attempts = 0;
+        const maxAttempts = 4; // 4 Versuche über 20 Sekunden
+        
+        while (attempts < maxAttempts && !loginSuccess) {
+          attempts++;
+          print('Auto-login verification attempt $attempts/$maxAttempts');
+          
+          await Future.delayed(const Duration(seconds: 5));
+          loginSuccess = await _verifyLogin();
+          
+          if (!loginSuccess && attempts < maxAttempts) {
+            print('Auto-login verification failed, retrying in 5 seconds...');
+          }
+        }
         
         if (loginSuccess) {
+          // Auto-Login erfolgreich - wechsle sofort zur Hauptseite
           setState(() => _isLoggedIn = true);
           await _loadSites();
-          // Wechsle dann zu VehicleAppointments für Fahrzeuge
           await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
           await Future.delayed(const Duration(seconds: 2));
           await _loadVehicles();
+          setState(() => _isLoading = false);
         } else {
           // Automatisches Login fehlgeschlagen - zeige Login-Screen
+          print('Auto-login failed after $maxAttempts attempts');
           setState(() => _isLoggedIn = false);
+          setState(() => _isLoading = false);
           // Lösche alte Credentials
           await storage.delete(key: _kUser);
           await storage.delete(key: _kPass);
@@ -189,7 +199,6 @@ class _MainAppState extends State<MainApp> {
       } catch (e) {
         print('Auto-login error: $e');
         setState(() => _isLoggedIn = false);
-      } finally {
         setState(() => _isLoading = false);
       }
     }
@@ -254,6 +263,7 @@ class _MainAppState extends State<MainApp> {
 
   // ---------- Login ----------
   Future<void> _performLogin(String username, String password) async {
+    // SOFORT Loading-Screen anzeigen
     setState(() => _isLoading = true);
     
     try {
@@ -265,24 +275,42 @@ class _MainAppState extends State<MainApp> {
       await storage.write(key: _kUser, value: username);
       await storage.write(key: _kPass, value: password);
       
-      // Lade Login-Seite über B2C
+      // Lade Login-Seite über B2C (im Hintergrund)
       await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
       
       // Warte auf Login-Seite und führe Auto-Login durch
       await Future.delayed(const Duration(seconds: 2));
       await _autoLoginB2C();
       
-      // Warte länger und prüfe ob Login erfolgreich war
-      await Future.delayed(const Duration(seconds: 5)); // Noch länger warten für B2C
-      final loginSuccess = await _verifyLogin();
+      // Warte länger und prüfe mehrfach ob Login erfolgreich war
+      bool loginSuccess = false;
+      int attempts = 0;
+      const maxAttempts = 6; // 6 Versuche über 30 Sekunden
+      
+      while (attempts < maxAttempts && !loginSuccess) {
+        attempts++;
+        print('Login verification attempt $attempts/$maxAttempts');
+        
+        await Future.delayed(const Duration(seconds: 5));
+        loginSuccess = await _verifyLogin();
+        
+        if (!loginSuccess && attempts < maxAttempts) {
+          print('Login verification failed, retrying in 5 seconds...');
+        }
+      }
       
       if (loginSuccess) {
+        // Login erfolgreich - wechsle sofort zur Hauptseite
         setState(() => _isLoggedIn = true);
+        
+        // Lade Sites und Fahrzeuge im Hintergrund
         await _loadSites();
-        // Wechsle zu VehicleAppointments für Fahrzeuge
         await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/VehicleAppointments'));
         await Future.delayed(const Duration(seconds: 2));
         await _loadVehicles();
+        
+        // Loading beenden - Hauptseite wird angezeigt
+        setState(() => _isLoading = false);
         
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -293,16 +321,15 @@ class _MainAppState extends State<MainApp> {
           );
         }
       } else {
-        // Login fehlgeschlagen - BLEIBE auf Login-Seite
+        // Login fehlgeschlagen - zurück zum Login-Screen
+        print('Login failed after $maxAttempts attempts');
         setState(() => _isLoggedIn = false);
+        setState(() => _isLoading = false);
         
         // Lösche gespeicherte Credentials bei fehlgeschlagenem Login
         await storage.delete(key: _kUser);
         await storage.delete(key: _kPass);
         await storage.delete(key: _kCookieStore);
-        
-        // Lade Login-Seite neu um sicherzustellen, dass wir dort bleiben
-        await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
         
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -318,6 +345,8 @@ class _MainAppState extends State<MainApp> {
     } catch (e) {
       print('Login error: $e');
       setState(() => _isLoggedIn = false);
+      setState(() => _isLoading = false);
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -326,8 +355,6 @@ class _MainAppState extends State<MainApp> {
           ),
         );
       }
-    } finally {
-      setState(() => _isLoading = false);
     }
   }
 
@@ -353,18 +380,30 @@ class _MainAppState extends State<MainApp> {
             return false;
           }
           
-          // Prüfe auf Fehlermeldungen
-          var errorElements = document.querySelectorAll('.error, .alert-danger, .validation-summary-errors, .pageLevel');
-          for (var i = 0; i < errorElements.length; i++) {
-            var error = errorElements[i];
-            if (error.style.display !== 'none' && error.textContent.trim()) {
-              console.log('❌ Found error message:', error.textContent.trim());
-              return false;
+          // Prüfe auf Fehlermeldungen (erweiterte Suche)
+          var errorSelectors = [
+            '.error', '.alert-danger', '.validation-summary-errors', '.pageLevel',
+            '.error-message', '.alert', '.warning', '.danger',
+            '[class*="error"]', '[class*="alert"]', '[class*="warning"]'
+          ];
+          
+          for (var i = 0; i < errorSelectors.length; i++) {
+            var errorElements = document.querySelectorAll(errorSelectors[i]);
+            for (var j = 0; j < errorElements.length; j++) {
+              var error = errorElements[j];
+              if (error.style.display !== 'none' && error.textContent.trim()) {
+                var errorText = error.textContent.trim().toLowerCase();
+                // Ignoriere leere oder irrelevante Fehlermeldungen
+                if (errorText.length > 5 && !errorText.includes('loading') && !errorText.includes('please wait')) {
+                  console.log('❌ Found error message:', error.textContent.trim());
+                  return false;
+                }
+              }
             }
           }
           
           // Prüfe ob wir auf einer Fehlerseite sind
-          if (url.includes('error') || url.includes('unauthorized') || url.includes('forbidden')) {
+          if (url.includes('error') || url.includes('unauthorized') || url.includes('forbidden') || url.includes('access denied')) {
             console.log('❌ On error page - login failed');
             return false;
           }
@@ -381,23 +420,30 @@ class _MainAppState extends State<MainApp> {
             
             // Prüfe ob die Seite vollständig geladen ist
             var pageContent = document.body.textContent || '';
-            var hasRealContent = pageContent.length > 2000; // Höhere Anforderung
+            var hasRealContent = pageContent.length > 3000; // Noch höhere Anforderung
             
             // Prüfe ob wichtige Elemente vorhanden sind
             var vehicleSelect = document.getElementById('vehicleSelection');
             var siteSelect = document.getElementById('siteSelection');
             var hasImportantElements = vehicleSelect || siteSelect;
             
+            // Zusätzliche Prüfung: Suche nach spezifischen Inhalten
+            var hasSpecificContent = pageContent.includes('Fahrzeug') || 
+                                   pageContent.includes('Vehicle') || 
+                                   pageContent.includes('Anlage') || 
+                                   pageContent.includes('Site');
+            
             console.log('Page content length:', pageContent.length);
             console.log('Has important elements:', hasImportantElements);
             console.log('Has real content:', hasRealContent);
+            console.log('Has specific content:', hasSpecificContent);
             
-            // NUR wenn beide Bedingungen erfüllt sind
-            if (hasRealContent && hasImportantElements) {
+            // NUR wenn ALLE Bedingungen erfüllt sind
+            if (hasRealContent && hasImportantElements && hasSpecificContent) {
               console.log('✅ Login successful - page has real content and elements');
               return true;
             } else {
-              console.log('❌ Login failed - page incomplete');
+              console.log('❌ Login failed - page incomplete or missing content');
               return false;
             }
           }
@@ -522,18 +568,18 @@ class _MainAppState extends State<MainApp> {
             return;
           }
           
-          // Fallback: Retry-Mechanismus
+          // Fallback: Retry-Mechanismus mit längerer Wartezeit
           console.log('🔄 Starting retry mechanism...');
           var tries=0;
           var t=setInterval(function(){ 
             tries++; 
             console.log('Retry attempt', tries);
             
-            if(tryLogin()||tries>20){
+            if(tryLogin()||tries>30){ // Mehr Versuche
               clearInterval(t);
               console.log('B2C Login attempt finished after', tries, 'tries');
             } 
-          },300);
+          },500); // Längere Wartezeit zwischen Versuchen
         }
         
         if (document.readyState === 'loading') {
@@ -961,42 +1007,53 @@ class _MainAppState extends State<MainApp> {
 
   @override
   Widget build(BuildContext context) {
-    // Zeige Loading-Screen beim App-Start
-    if (_isLoading && !_isLoggedIn) {
+    // Zeige Loading-Screen beim App-Start oder während Login
+    if (_isLoading) {
       return Scaffold(
         body: Container(
-          decoration: const BoxDecoration(
+              decoration: const BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
               colors: [Brand.primary, Brand.primaryDark],
             ),
           ),
-          child: const Center(
-            child: Column(
+          child: Center(
+              child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-                CircularProgressIndicator(
+                children: [
+                const CircularProgressIndicator(
                   valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                 ),
-                SizedBox(height: 24),
+                const SizedBox(height: 24),
                 Text(
-                  'Lade App...',
-                  style: TextStyle(
-                color: Colors.white,
+                  _isLoggedIn ? 'Lade Daten...' : 'Melde an...',
+                  style: const TextStyle(
+          color: Colors.white,
                     fontSize: 18,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
+                if (!_isLoggedIn) ...[
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Bitte warten Sie während der Anmeldung',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
               ],
             ),
-          ),
         ),
-      );
-    }
+      ),
+    );
+  }
 
-    if (!_isLoggedIn) {
-      return LoginScreen(onLogin: _performLogin, isLoading: _isLoading);
+    // Zusätzliche Sicherheitsprüfung: Nur bei wirklich eingeloggtem Zustand zur Hauptseite
+    if (!_isLoggedIn || _vehicles.isEmpty) {
+      return LoginScreen(onLogin: _performLogin, isLoading: false);
     }
 
     return Scaffold(
@@ -1010,30 +1067,21 @@ class _MainAppState extends State<MainApp> {
             itemBuilder: (context) => const [
               PopupMenuItem(value: 'logout', child: Text('Abmelden')),
             ],
-                  ),
-              ],
-            ),
-      body: _isLoading
-          ? const Center(
-        child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Lade Daten...'),
-                ],
-              ),
-            )
-          : MainScreen(
-              sites: _sites,
-              currentSite: _currentSite,
-              vehicles: _vehicles,
-              onSiteChanged: _switchSite,
-              onVehicleSelected: _selectVehicle,
-              onStartCharging: _startCharging,
-              onRefresh: () async {
-                await _loadVehicles();
-              },
+          ),
+        ],
+      ),
+      body: MainScreen(
+        sites: _sites,
+        currentSite: _currentSite,
+        vehicles: _vehicles,
+        onSiteChanged: _switchSite,
+        onVehicleSelected: _selectVehicle,
+        onStartCharging: _startCharging,
+        onRefresh: () async {
+          setState(() => _isLoading = true);
+          await _loadVehicles();
+          setState(() => _isLoading = false);
+        },
       ),
     );
   }

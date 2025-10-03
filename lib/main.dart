@@ -168,7 +168,7 @@ class _MainAppState extends State<MainApp> {
         await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
         
         // Warte und prüfe ob wir automatisch eingeloggt sind
-        await Future.delayed(const Duration(seconds: 3));
+        await Future.delayed(const Duration(seconds: 4));
         final loginSuccess = await _verifyLogin();
         
         if (loginSuccess) {
@@ -181,6 +181,10 @@ class _MainAppState extends State<MainApp> {
         } else {
           // Automatisches Login fehlgeschlagen - zeige Login-Screen
           setState(() => _isLoggedIn = false);
+          // Lösche alte Credentials
+          await storage.delete(key: _kUser);
+          await storage.delete(key: _kPass);
+          await storage.delete(key: _kCookieStore);
         }
       } catch (e) {
         print('Auto-login error: $e');
@@ -269,7 +273,7 @@ class _MainAppState extends State<MainApp> {
       await _autoLoginB2C();
       
       // Warte länger und prüfe ob Login erfolgreich war
-      await Future.delayed(const Duration(seconds: 4)); // Länger warten
+      await Future.delayed(const Duration(seconds: 5)); // Noch länger warten für B2C
       final loginSuccess = await _verifyLogin();
       
       if (loginSuccess) {
@@ -289,13 +293,23 @@ class _MainAppState extends State<MainApp> {
           );
         }
       } else {
-        // Login fehlgeschlagen - zurück zum Login
+        // Login fehlgeschlagen - BLEIBE auf Login-Seite
         setState(() => _isLoggedIn = false);
+        
+        // Lösche gespeicherte Credentials bei fehlgeschlagenem Login
+        await storage.delete(key: _kUser);
+        await storage.delete(key: _kPass);
+        await storage.delete(key: _kCookieStore);
+        
+        // Lade Login-Seite neu um sicherzustellen, dass wir dort bleiben
+        await _backgroundController.loadRequest(Uri.parse('https://soleco-optimizer.ch/AzureADB2C/Account/SignIn'));
+        
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text('Login fehlgeschlagen - bitte prüfen Sie Ihre Anmeldedaten'),
               backgroundColor: Colors.red,
+              duration: Duration(seconds: 5),
             ),
           );
         }
@@ -323,18 +337,24 @@ class _MainAppState extends State<MainApp> {
       final js = '''
         (function(){
           console.log('🔍 Verifying login...');
-          console.log('Current URL:', window.location.href);
+          var url = window.location.href;
+          console.log('Current URL:', url);
           
-          // Prüfe ob wir auf der B2C Login-Seite sind (dann ist Login fehlgeschlagen)
-          var loginForm = document.getElementById('localAccountForm');
-          var b2cLogin = url.includes('b2clogin.com') || url.includes('AzureADB2C');
-          if (loginForm || b2cLogin) {
+          // STRENGE Prüfung: Sind wir noch auf B2C-Login-Seiten?
+          if (url.includes('b2clogin.com') || url.includes('AzureADB2C') || url.includes('Account/SignIn')) {
             console.log('❌ Still on B2C login page - login failed');
             return false;
           }
           
+          // Prüfe ob Login-Formular noch vorhanden ist
+          var loginForm = document.getElementById('localAccountForm');
+          if (loginForm) {
+            console.log('❌ Login form still present - login failed');
+            return false;
+          }
+          
           // Prüfe auf Fehlermeldungen
-          var errorElements = document.querySelectorAll('.error, .alert-danger, .validation-summary-errors');
+          var errorElements = document.querySelectorAll('.error, .alert-danger, .validation-summary-errors, .pageLevel');
           for (var i = 0; i < errorElements.length; i++) {
             var error = errorElements[i];
             if (error.style.display !== 'none' && error.textContent.trim()) {
@@ -344,15 +364,10 @@ class _MainAppState extends State<MainApp> {
           }
           
           // Prüfe ob wir auf einer Fehlerseite sind
-          var url = window.location.href;
           if (url.includes('error') || url.includes('unauthorized') || url.includes('forbidden')) {
             console.log('❌ On error page - login failed');
             return false;
           }
-          
-          // Prüfe ob wir auf der Hauptseite sind UND ob die wichtigen Elemente vorhanden sind
-          var vehicleSelect = document.getElementById('vehicleSelection');
-          var siteSelect = document.getElementById('siteSelection');
           
           // Prüfe ob wir auf der richtigen Domain sind
           if (!url.includes('soleco-optimizer.ch')) {
@@ -360,27 +375,29 @@ class _MainAppState extends State<MainApp> {
             return false;
           }
           
-          // Prüfe ob wir auf einer der erwarteten Seiten sind
+          // NUR wenn wir wirklich auf der Hauptseite sind
           if (url.includes('/VehicleAppointments') || url.includes('/Views')) {
             console.log('✅ On correct URL');
             
-            // Zusätzliche Prüfung: Suche nach Benutzer-spezifischen Elementen
-            var userElements = document.querySelectorAll('[class*="user"], [id*="user"], [class*="profile"], [id*="profile"]');
-            var hasUserContent = userElements.length > 0;
-            
-            // Prüfe ob die Seite vollständig geladen ist (nicht nur Login-Redirect)
+            // Prüfe ob die Seite vollständig geladen ist
             var pageContent = document.body.textContent || '';
-            var hasRealContent = pageContent.length > 1000; // Mindestens 1000 Zeichen Inhalt
+            var hasRealContent = pageContent.length > 2000; // Höhere Anforderung
             
-            console.log('Has user elements:', hasUserContent);
-            console.log('Has real content:', hasRealContent);
+            // Prüfe ob wichtige Elemente vorhanden sind
+            var vehicleSelect = document.getElementById('vehicleSelection');
+            var siteSelect = document.getElementById('siteSelection');
+            var hasImportantElements = vehicleSelect || siteSelect;
+            
             console.log('Page content length:', pageContent.length);
+            console.log('Has important elements:', hasImportantElements);
+            console.log('Has real content:', hasRealContent);
             
-            if (hasRealContent) {
-              console.log('✅ Login successful - page has real content');
+            // NUR wenn beide Bedingungen erfüllt sind
+            if (hasRealContent && hasImportantElements) {
+              console.log('✅ Login successful - page has real content and elements');
               return true;
             } else {
-              console.log('❌ Login failed - page has no real content');
+              console.log('❌ Login failed - page incomplete');
               return false;
             }
           }
@@ -496,25 +513,35 @@ class _MainAppState extends State<MainApp> {
         }
         
         // Warte bis die Seite vollständig geladen ist
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', function() {
-            setTimeout(tryLogin, 500);
-          });
-        } else {
-          setTimeout(tryLogin, 500);
-        }
-        
-        // Fallback: Retry-Mechanismus
-        if(!tryLogin()){
-          console.log('🔄 Retrying B2C login...');
+        function startLoginAttempt() {
+          console.log('🚀 Starting B2C login attempt...');
+          
+          // Versuche sofort
+          if (tryLogin()) {
+            console.log('✅ Login attempt started immediately');
+            return;
+          }
+          
+          // Fallback: Retry-Mechanismus
+          console.log('🔄 Starting retry mechanism...');
           var tries=0;
           var t=setInterval(function(){ 
             tries++; 
-            if(tryLogin()||tries>30){
+            console.log('Retry attempt', tries);
+            
+            if(tryLogin()||tries>20){
               clearInterval(t);
               console.log('B2C Login attempt finished after', tries, 'tries');
             } 
-          },200);
+          },300);
+        }
+        
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', function() {
+            setTimeout(startLoginAttempt, 1000);
+          });
+        } else {
+          setTimeout(startLoginAttempt, 1000);
         }
       })();
     ''';
